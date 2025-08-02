@@ -1,28 +1,16 @@
 # api/sync.py
+from http.server import BaseHTTPRequestHandler
 import json
 
-def handler(request):
-    """Vercel serverless function handler"""
-    
-    # Set response headers
-    headers = {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type',
-        'Content-Type': 'application/json'
-    }
-    
-    if request.method == 'OPTIONS':
-        # Handle CORS preflight
-        return {
-            'statusCode': 200,
-            'headers': headers,
-            'body': ''
-        }
-    
-    elif request.method == 'GET':
-        # Handle GET requests for testing
-        response_data = {
+class handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        """Handle GET requests for testing"""
+        self.send_response(200)
+        self.send_header('Content-type', 'application/json')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.end_headers()
+        
+        response = {
             "status": "success",
             "message": "Shopify-Notion sync endpoint is working!",
             "method": "GET",
@@ -30,26 +18,32 @@ def handler(request):
             "instructions": "Make a POST request to trigger the sync"
         }
         
-        return {
-            'statusCode': 200,
-            'headers': headers,
-            'body': json.dumps(response_data, indent=2)
-        }
-    
-    elif request.method == 'POST':
+        self.wfile.write(json.dumps(response, indent=2).encode())
+
+    def do_POST(self):
+        """Handle POST requests from Notion"""
         try:
-            # Get request body if present
+            # Get the content length to read the request body
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length) if content_length > 0 else b''
+            
+            # Try to parse JSON data if present
             request_data = {}
-            if hasattr(request, 'body') and request.body:
+            if post_data:
                 try:
-                    request_data = json.loads(request.body)
+                    request_data = json.loads(post_data.decode('utf-8'))
                 except json.JSONDecodeError:
-                    request_data = {"raw_data": str(request.body)}
+                    request_data = {"raw_data": post_data.decode('utf-8')}
             
             # This is where we'll add Shopify GraphQL logic later
             # For now, return static data
             
-            response_data = {
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            
+            response = {
                 "status": "success",
                 "message": "Sync completed successfully! ✅",
                 "static_value": "This will be replaced with real Shopify data",
@@ -58,18 +52,19 @@ def handler(request):
                 "received_data": request_data,
                 "next_steps": [
                     "Add Shopify GraphQL queries",
-                    "Connect to Notion database",
+                    "Connect to Notion database", 
                     "Add real data synchronization"
                 ]
             }
             
-            return {
-                'statusCode': 200,
-                'headers': headers,
-                'body': json.dumps(response_data, indent=2)
-            }
+            self.wfile.write(json.dumps(response, indent=2).encode())
             
         except Exception as e:
+            self.send_response(500)
+            self.send_header('Content-type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            
             error_response = {
                 "status": "error",
                 "message": f"Sync failed: {str(e)}",
@@ -77,19 +72,12 @@ def handler(request):
                 "error_type": type(e).__name__
             }
             
-            return {
-                'statusCode': 500,
-                'headers': headers,
-                'body': json.dumps(error_response, indent=2)
-            }
-    
-    else:
-        # Handle unsupported methods
-        return {
-            'statusCode': 405,
-            'headers': headers,
-            'body': json.dumps({
-                "status": "error",
-                "message": f"Method {request.method} not allowed"
-            })
-        }
+            self.wfile.write(json.dumps(error_response, indent=2).encode())
+
+    def do_OPTIONS(self):
+        """Handle CORS preflight requests"""
+        self.send_response(200)
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.end_headers()
