@@ -70,8 +70,6 @@ class ShopifyNotionSync:
                                 currencyCode
                             }}
                         }}
-                        displayFinancialStatus
-                        displayFulfillmentStatus
                         customer {{
                             firstName
                             lastName
@@ -100,11 +98,7 @@ class ShopifyNotionSync:
             if order.get('totalPriceSet') and order['totalPriceSet'].get('shopMoney'):
                 total_amount = order['totalPriceSet']['shopMoney']['amount']
                 currency = order['totalPriceSet']['shopMoney']['currencyCode']
-            
-            # Get status
-            financial_status = order.get('displayFinancialStatus', 'Unknown')
-            fulfillment_status = order.get('displayFulfillmentStatus', 'Unknown')
-            
+                        
             # Prepare properties for Notion (only basic fields)
             properties = {
                 "Order ID": {
@@ -154,17 +148,6 @@ class ShopifyNotionSync:
                     properties["Email"] = {
                         "email": customer['email']
                     }
-            
-            # Add status as text for now (simpler than select)
-            properties["Status"] = {
-                "rich_text": [
-                    {
-                        "text": {
-                            "content": f"{financial_status} | {fulfillment_status}"
-                        }
-                    }
-                ]
-            }
             
             print(f"Creating Notion page with properties: {json.dumps(properties, indent=2)}")
             
