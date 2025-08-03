@@ -1,47 +1,24 @@
 # api/sync.py
 from http.server import BaseHTTPRequestHandler
 import json
+import datetime
+import sys
+import os
+
+# Add the current directory to Python path for imports
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        """Handle GET requests for testing"""
-        self.send_response(200)
-        self.send_header('Content-type', 'application/json')
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.end_headers()
+        """Handle GET requests for testing connections"""
+        print(f"[{datetime.datetime.now()}] GET request received - Testing connections")
         
-        response = {
-            "status": "success",
-            "message": "Shopify-Notion sync endpoint is working!",
-            "method": "GET",
-            "static_value": "Hello from Vercel! 🚀",
-            "instructions": "Make a POST request to trigger the sync"
-        }
-        
-        self.wfile.write(json.dumps(response, indent=2).encode())
-
-    def do_POST(self):
-        """Handle POST requests from Notion"""
         try:
-            # Get the content length to read the request body
-            content_length = int(self.headers.get('Content-Length', 0))
-            post_data = self.rfile.read(content_length) if content_length > 0 else b''
+            from shopify_notion_sync import ShopifyNotionSync
             
-            # Try to parse JSON data if present
-            request_data = {}
-            if post_data:
-                try:
-                    request_data = json.loads(post_data.decode('utf-8'))
-                except json.JSONDecodeError:
-                    request_data = {"raw_data": post_data.decode('utf-8')}
-            
-            # Detect if request is from Notion
-            user_agent = self.headers.get('User-Agent', '')
-            notion_source = self.headers.get('X-Notion-Source', '')
-            is_notion_webhook = 'notion' in user_agent.lower() or notion_source
-            
-            # This is where we'll add Shopify GraphQL logic later
-            # For now, return static data
+            # Test connections
+            sync = ShopifyNotionSync()
+            test_results = sync.test_connections()
             
             self.send_response(200)
             self.send_header('Content-type', 'application/json')
@@ -49,31 +26,82 @@ class handler(BaseHTTPRequestHandler):
             self.end_headers()
             
             response = {
-                "status": "success",
-                "message": "🚀 Shopify → Notion sync triggered successfully!",
-                "source": "Notion Button" if is_notion_webhook else "Unknown",
-                "static_data": {
-                    "shopify_orders": 15,
-                    "products_updated": 8,
-                    "customers_synced": 23
-                },
-                "timestamp": "2025-08-02T12:00:00Z",
-                "webhook_info": {
-                    "user_agent": user_agent,
-                    "custom_headers": dict(self.headers.items()),
-                    "received_data": request_data
-                },
-                "next_steps": [
-                    "✅ Webhook connection working",
-                    "🔄 Add real Shopify GraphQL queries",
-                    "📊 Connect to Notion database",
-                    "🎯 Add real data synchronization"
-                ]
+                "status": "connection_test",
+                "message": "Testing Shopify and Notion connections",
+                "results": test_results,
+                "timestamp": datetime.datetime.now().isoformat()
             }
             
+            print(f"Connection test results: {test_results}")
             self.wfile.write(json.dumps(response, indent=2).encode())
             
         except Exception as e:
+            print(f"Connection test failed: {e}")
+            self.send_response(500)
+            self.send_header('Content-type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            
+            error_response = {
+                "status": "error",
+                "message": f"Connection test failed: {str(e)}",
+                "timestamp": datetime.datetime.now().isoformat()
+            }
+            
+            self.wfile.write(json.dumps(error_response, indent=2).encode())
+
+    def do_POST(self):
+        """Handle POST requests from Notion - Perform actual sync"""
+        try:
+            print(f"[{datetime.datetime.now()}] POST request received - Starting sync")
+            
+            # Get request data
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length) if content_length > 0 else b''
+            
+            request_data = {}
+            if post_data:
+                try:
+                    request_data = json.loads(post_data.decode('utf-8'))
+                    print(f"Request data: {request_data}")
+                except json.JSONDecodeError:
+                    print("No JSON data in request")
+            
+            # Import and run sync
+            from shopify_notion_sync import ShopifyNotionSync
+            
+            sync = ShopifyNotionSync()
+            
+            # Get sync limit from request or default to 5
+            sync_limit = request_data.get('limit', 5)
+            
+            # Perform the sync
+            sync_results = sync.sync_orders_to_notion(limit=sync_limit)
+            
+            # Send response
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            
+            response = {
+                "status": "sync_completed",
+                "message": "🚀 Shopify → Notion sync completed!",
+                "sync_results": sync_results,
+                "request_info": {
+                    "limit": sync_limit,
+                    "source": "Notion Button" if 'notion' in self.headers.get('User-Agent', '').lower() else "Direct API"
+                },
+                "timestamp": datetime.datetime.now().isoformat()
+            }
+            
+            print(f"Sync completed successfully: {sync_results}")
+            self.wfile.write(json.dumps(response, indent=2).encode())
+            
+        except Exception as e:
+            print(f"Sync error: {e}")
+            print(f"Error type: {type(e).__name__}")
+            
             self.send_response(500)
             self.send_header('Content-type', 'application/json')
             self.send_header('Access-Control-Allow-Origin', '*')
@@ -82,14 +110,16 @@ class handler(BaseHTTPRequestHandler):
             error_response = {
                 "status": "error",
                 "message": f"Sync failed: {str(e)}",
-                "static_value": "Error occurred",
-                "error_type": type(e).__name__
+                "error_type": type(e).__name__,
+                "timestamp": datetime.datetime.now().isoformat()
             }
             
             self.wfile.write(json.dumps(error_response, indent=2).encode())
 
     def do_OPTIONS(self):
         """Handle CORS preflight requests"""
+        print(f"[{datetime.datetime.now()}] OPTIONS request received (CORS)")
+        
         self.send_response(200)
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
