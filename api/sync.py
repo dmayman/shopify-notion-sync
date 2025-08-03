@@ -35,6 +35,11 @@ class handler(BaseHTTPRequestHandler):
                 except json.JSONDecodeError:
                     request_data = {"raw_data": post_data.decode('utf-8')}
             
+            # Detect if request is from Notion
+            user_agent = self.headers.get('User-Agent', '')
+            notion_source = self.headers.get('X-Notion-Source', '')
+            is_notion_webhook = 'notion' in user_agent.lower() or notion_source
+            
             # This is where we'll add Shopify GraphQL logic later
             # For now, return static data
             
@@ -45,15 +50,24 @@ class handler(BaseHTTPRequestHandler):
             
             response = {
                 "status": "success",
-                "message": "Sync completed successfully! ✅",
-                "static_value": "This will be replaced with real Shopify data",
+                "message": "🚀 Shopify → Notion sync triggered successfully!",
+                "source": "Notion Button" if is_notion_webhook else "Unknown",
+                "static_data": {
+                    "shopify_orders": 15,
+                    "products_updated": 8,
+                    "customers_synced": 23
+                },
                 "timestamp": "2025-08-02T12:00:00Z",
-                "records_processed": 42,
-                "received_data": request_data,
+                "webhook_info": {
+                    "user_agent": user_agent,
+                    "custom_headers": dict(self.headers.items()),
+                    "received_data": request_data
+                },
                 "next_steps": [
-                    "Add Shopify GraphQL queries",
-                    "Connect to Notion database", 
-                    "Add real data synchronization"
+                    "✅ Webhook connection working",
+                    "🔄 Add real Shopify GraphQL queries",
+                    "📊 Connect to Notion database",
+                    "🎯 Add real data synchronization"
                 ]
             }
             
