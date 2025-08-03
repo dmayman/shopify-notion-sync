@@ -55,7 +55,7 @@ class ShopifyNotionSync:
         return data
 
     def get_recent_orders(self, limit=10):
-        """Get recent orders from Shopify"""
+        """Get recent orders from Shopify - simplified version"""
         query = f"""
         query {{
             orders(first: {limit}, sortKey: CREATED_AT, reverse: true) {{
@@ -63,35 +63,19 @@ class ShopifyNotionSync:
                     node {{
                         id
                         name
-                        email
                         createdAt
-                        updatedAt
-                        totalPriceV2 {{
-                            amount
-                            currencyCode
+                        totalPriceSet {{
+                            shopMoney {{
+                                amount
+                                currencyCode
+                            }}
                         }}
-                        financialStatus
-                        fulfillmentStatus
+                        displayFinancialStatus
+                        displayFulfillmentStatus
                         customer {{
                             firstName
                             lastName
                             email
-                        }}
-                        shippingAddress {{
-                            city
-                            country
-                        }}
-                        lineItems(first: 5) {{
-                            edges {{
-                                node {{
-                                    title
-                                    quantity
-                                    variant {{
-                                        title
-                                        price
-                                    }}
-                                }}
-                            }}
                         }}
                     }}
                 }}
@@ -102,41 +86,51 @@ class ShopifyNotionSync:
         return self.fetch_shopify_data(query)
 
     def create_notion_page(self, order_data):
-        """Create a new page in Notion database"""
+        """Create a new page in Notion database - simplified version"""
         try:
             order = order_data['node']
             
-            # Prepare properties for Notion
+            # Extract basic information
+            order_id = order['name']  # This is like "#1001"
+            created_date = order['createdAt']
+            
+            # Get total price and currency
+            total_amount = "0"
+            currency = "USD"
+            if order.get('totalPriceSet') and order['totalPriceSet'].get('shopMoney'):
+                total_amount = order['totalPriceSet']['shopMoney']['amount']
+                currency = order['totalPriceSet']['shopMoney']['currencyCode']
+            
+            # Get status
+            financial_status = order.get('displayFinancialStatus', 'Unknown')
+            fulfillment_status = order.get('displayFulfillmentStatus', 'Unknown')
+            
+            # Prepare properties for Notion (only basic fields)
             properties = {
                 "Order ID": {
                     "title": [
                         {
                             "text": {
-                                "content": order['name']
+                                "content": order_id
                             }
                         }
                     ]
                 },
                 "Total": {
-                    "number": float(order['totalPriceV2']['amount'])
+                    "number": float(total_amount)
                 },
                 "Currency": {
                     "rich_text": [
                         {
                             "text": {
-                                "content": order['totalPriceV2']['currencyCode']
+                                "content": currency
                             }
                         }
                     ]
                 },
-                "Status": {
-                    "select": {
-                        "name": order['financialStatus'].title()
-                    }
-                },
                 "Created": {
                     "date": {
-                        "start": order['createdAt']
+                        "start": created_date
                     }
                 }
             }
@@ -161,17 +155,31 @@ class ShopifyNotionSync:
                         "email": customer['email']
                     }
             
+            # Add status as text for now (simpler than select)
+            properties["Status"] = {
+                "rich_text": [
+                    {
+                        "text": {
+                            "content": f"{financial_status} | {fulfillment_status}"
+                        }
+                    }
+                ]
+            }
+            
+            print(f"Creating Notion page with properties: {json.dumps(properties, indent=2)}")
+            
             # Create the page
             response = self.notion.pages.create(
                 parent={"database_id": self.notion_database_id},
                 properties=properties
             )
             
-            print(f"Created Notion page for order {order['name']}")
+            print(f"✅ Created Notion page for order {order_id}")
             return response
             
         except Exception as e:
-            print(f"Error creating Notion page for order {order_data['node']['name']}: {e}")
+            print(f"❌ Error creating Notion page for order {order_data['node']['name']}: {e}")
+            print(f"Order data: {json.dumps(order_data, indent=2)}")
             return None
 
     def sync_orders_to_notion(self, limit=5):
