@@ -55,7 +55,7 @@ class ShopifyNotionSync:
         return data
 
     def get_recent_orders(self, limit=10):
-        """Get orders from Shopify between July 14-22, 2024"""
+        """Get orders from Shopify between July 14-22, 2025"""
         # Set specific date range for testing
         start_date = "2025-07-14T00:00:00Z"
         end_date = "2025-07-22T23:59:59Z"
@@ -361,7 +361,7 @@ class ShopifyNotionSync:
             print(f"Error details: {str(e)}")
             return None
 
-    def sync_orders_to_notion(self, limit=5):
+    def sync_orders_to_notion(self, limit=50):
         """Main sync function - get orders from Shopify and create Notion pages"""
         try:
             print(f"Starting sync of {limit} recent orders...")
@@ -505,8 +505,8 @@ class handler(BaseHTTPRequestHandler):
             # Create sync instance and run sync
             sync = ShopifyNotionSync()
             
-            # Get sync limit from request or default to 5
-            sync_limit = request_data.get('limit', 5)
+            # Get sync limit from request or default to 50
+            sync_limit = request_data.get('limit', 50)
             
             # Perform the sync
             sync_results = sync.sync_orders_to_notion(limit=sync_limit)
