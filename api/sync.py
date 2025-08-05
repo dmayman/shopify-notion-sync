@@ -57,8 +57,8 @@ class ShopifyNotionSync:
     def get_recent_orders(self, limit=10):
         """Get orders from Shopify between July 14-22, 2024"""
         # Set specific date range for testing
-        start_date = "2024-07-14T00:00:00Z"
-        end_date = "2024-07-22T23:59:59Z"
+        start_date = "2025-07-14T00:00:00Z"
+        end_date = "2025-07-22T23:59:59Z"
         
         print(f"Fetching orders from {start_date} to {end_date}")
         
