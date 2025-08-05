@@ -5,6 +5,7 @@ import datetime
 import os
 import requests
 from notion_client import Client
+from .blob_storage import SyncBlobStorage
 
 class ShopifyNotionSync:
     def __init__(self):
@@ -25,6 +26,9 @@ class ShopifyNotionSync:
         
         # Initialize Notion client
         self.notion = Client(auth=self.notion_token)
+        
+        # Initialize sync blob storage
+        self.sync_storage = SyncBlobStorage()
         
         print(f"Initialized sync for store: {self.shopify_store_url}")
         print(f"Notion database ID: {self.notion_database_id}")
@@ -54,23 +58,31 @@ class ShopifyNotionSync:
         print(f"Successfully fetched data from Shopify")
         return data
 
-    def get_recent_orders(self, limit=10):
-        """Get orders from Shopify between July 14-22, 2025"""
-        # Set specific date range for testing
-        start_date = "2025-07-14T00:00:00Z"
-        end_date = "2025-07-22T23:59:59Z"
+    def get_shopify_orders(self, limit=50, date_filter=None, order_ids=None):
+        """Get orders from Shopify with flexible filtering"""
+        query_filter = ""
         
-        print(f"Fetching orders from {start_date} to {end_date}")
+        if date_filter:
+            query_filter = f'query: "{date_filter}"'
+        elif order_ids:
+            # Query specific orders by ID
+            order_filter = " OR ".join([f"name:{oid}" for oid in order_ids])
+            query_filter = f'query: "{order_filter}"'
+        else:
+            # Default: get recent orders (no date filter)
+            query_filter = ""
+            print("Fetching recent orders (no date filter)")
         
         query = f"""
         query {{
-            orders(first: {limit}, sortKey: CREATED_AT, reverse: true, query: "created_at:>={start_date} AND created_at:<={end_date}") {{
+            orders(first: {limit}, sortKey: CREATED_AT, reverse: true, {query_filter}) {{
                 edges {{
                     node {{
                         id
                         legacyResourceId
                         name
                         createdAt
+                        updatedAt
                         email
                         customer {{
                             displayName
@@ -121,6 +133,31 @@ class ShopifyNotionSync:
         """
         
         return self.fetch_shopify_data(query)
+
+    def determine_sync_strategy(self):
+        """Ultra-minimal sync strategy determination"""
+        last_sync = self.sync_storage.get_last_sync()
+        failed_orders = self.sync_storage.get_failed_orders()
+        
+        strategy = {
+            'sync_type': 'smart',
+            'actions': [],
+            'needs_initial': last_sync is None,
+            'has_failed_orders': len(failed_orders) > 0
+        }
+        
+        if last_sync is None:
+            strategy['sync_type'] = 'initial'
+            strategy['actions'].append('Initial sync required - never synced before')
+        else:
+            if failed_orders:
+                strategy['actions'].append(f'Retry {len(failed_orders)} failed orders')
+            strategy['actions'].append(f'Sync orders updated since {last_sync}')
+        
+        if not strategy['actions']:
+            strategy['actions'].append('All orders are up to date')
+        
+        return strategy
 
     def calculate_fees(self, transactions):
         """Calculate total fees from order transactions"""
@@ -267,11 +304,36 @@ class ShopifyNotionSync:
             
         return properties
 
+    def delete_notion_pages(self, page_ids):
+        """Delete existing Notion pages"""
+        if isinstance(page_ids, str):
+            page_ids = [page_ids]
+        
+        for page_id in page_ids:
+            try:
+                # Notion doesn't have a delete API, so we archive the page
+                self.notion.pages.update(
+                    page_id=page_id,
+                    archived=True
+                )
+                print(f"🗑️  Archived Notion page {page_id}")
+            except Exception as e:
+                print(f"⚠️  Failed to archive page {page_id}: {e}")
+
     def create_notion_page(self, order_data):
         """Create Notion pages for order (parent + line items if multi-product)"""
         try:
             order = order_data['node']
             transformed_data = self.transform_order_data(order)
+            order_id = transformed_data['order_id']
+            
+            # Check if order already exists (for updates)
+            existing_page_id = self.sync_storage.get_synced_order_page_id(order_id)
+            if existing_page_id:
+                print(f"🔄 Order {order_id} exists - archiving old pages")
+                # For multi-product orders, we might have multiple pages to archive
+                # For now, just archive the main page (could be improved to track line items)
+                self.delete_notion_pages(existing_page_id)
             
             created_pages = []
             
@@ -328,6 +390,9 @@ class ShopifyNotionSync:
                     
                 print(f"✅ Created {len(transformed_data['line_items'])} line item pages")
                 
+                # Record success in sync storage
+                self.sync_storage.mark_order_synced(order_id, parent_page_id)
+                
             else:
                 # Single product order
                 line_item = transformed_data['line_items'][0]
@@ -351,51 +416,114 @@ class ShopifyNotionSync:
                 )
                 created_pages.append(single_response)
                 
-                print(f"✅ Created single product page for order {transformed_data['order_id']}")
+                print(f"✅ Created single product page for order {order_id}")
+                
+                # Record success in sync storage
+                self.sync_storage.mark_order_synced(order_id, single_response['id'])
             
             return created_pages
             
         except Exception as e:
-            print(f"❌ Error creating Notion page for order {order_data['node']['name']}: {e}")
-            print(f"Error details: {str(e)}")
+            order_id = order_data['node']['name']
+            error_message = str(e)
+            print(f"❌ Error creating Notion page for order {order_id}: {error_message}")
+            print(f"Error details: {error_message}")
+            
+            # Record failure in sync storage
+            self.sync_storage.mark_order_failed(order_id)
             return None
 
-    def sync_orders_to_notion(self, limit=50):
-        """Main sync function - get orders from Shopify and create Notion pages"""
+    def sync_orders_to_notion(self, mode='smart', limit=50):
+        """Ultra-minimal sync function using Shopify's updatedAt field"""
         try:
-            print(f"Starting sync of {limit} recent orders...")
+            # Determine sync strategy
+            if mode == 'initial':
+                sync_strategy = {'sync_type': 'initial', 'actions': ['Initial sync requested']}
+            else:
+                sync_strategy = self.determine_sync_strategy()
             
-            # Fetch orders from Shopify
-            orders_data = self.get_recent_orders(limit)
-            orders = orders_data['data']['orders']['edges']
-            
-            print(f"Found {len(orders)} orders to sync")
+            print(f"🔍 Sync strategy: {sync_strategy['sync_type']}")
+            for action in sync_strategy['actions']:
+                print(f"   - {action}")
             
             # Track results
             created_pages_count = 0
             processed_orders = 0
             errors = []
             
-            # Create Notion pages for each order
-            for order_data in orders:
-                result = self.create_notion_page(order_data)
-                if result:
-                    processed_orders += 1
-                    created_pages_count += len(result)  # result is now a list of created pages
-                else:
-                    errors.append(order_data['node']['name'])
+            if sync_strategy['sync_type'] == 'initial' or sync_strategy['needs_initial']:
+                # Initial sync: get all recent orders
+                print(f"🚀 Starting initial sync (limit: {limit})")
+                orders_data = self.get_shopify_orders(limit=limit)
+                orders = orders_data['data']['orders']['edges']
+                
+                print(f"Found {len(orders)} orders for initial sync")
+                
+                # Process each order
+                for order_data in orders:
+                    result = self.create_notion_page(order_data)
+                    if result:
+                        processed_orders += 1
+                        created_pages_count += len(result)
+                    else:
+                        errors.append(order_data['node']['name'])
+            
+            else:
+                # Smart sync: handle failed orders and updated orders
+                print(f"🧠 Starting smart sync")
+                
+                # Get last sync timestamp
+                last_sync = self.sync_storage.get_last_sync()
+                
+                # 1. Retry failed orders first
+                failed_order_ids = self.sync_storage.get_failed_orders()
+                if failed_order_ids:
+                    print(f"🔄 Retrying {len(failed_order_ids)} failed orders")
+                    if failed_order_ids:
+                        retry_data = self.get_shopify_orders(order_ids=failed_order_ids)
+                        for order_data in retry_data['data']['orders']['edges']:
+                            result = self.create_notion_page(order_data)
+                            if result:
+                                processed_orders += 1
+                                created_pages_count += len(result)
+                            else:
+                                errors.append(order_data['node']['name'])
+                
+                # 2. Get orders updated since last sync
+                if last_sync:
+                    date_filter = f"updated_at:>={last_sync}"
+                    print(f"📥 Fetching orders updated since {last_sync}")
+                    updated_data = self.get_shopify_orders(limit=limit, date_filter=date_filter)
+                    updated_orders = updated_data['data']['orders']['edges']
+                    
+                    print(f"Found {len(updated_orders)} updated orders")
+                    
+                    for order_data in updated_orders:
+                        result = self.create_notion_page(order_data)
+                        if result:
+                            processed_orders += 1
+                            created_pages_count += len(result)
+                        else:
+                            errors.append(order_data['node']['name'])
+            
+            # Mark sync as completed
+            self.sync_storage.complete_sync()
             
             # Return summary
             summary = {
                 "status": "success",
-                "total_orders": len(orders),
+                "sync_type": sync_strategy['sync_type'],
+                "strategy": sync_strategy,
                 "processed_orders": processed_orders,
                 "created_pages": created_pages_count,
                 "errors": errors,
                 "timestamp": datetime.datetime.now().isoformat()
             }
             
-            print(f"Sync completed: {processed_orders}/{len(orders)} orders processed, {created_pages_count} total pages created")
+            print(f"✅ Sync completed: {processed_orders} orders processed, {created_pages_count} pages created")
+            if errors:
+                print(f"⚠️  {len(errors)} orders failed: {errors}")
+            
             return summary
             
         except Exception as e:
@@ -404,7 +532,7 @@ class ShopifyNotionSync:
                 "message": str(e),
                 "timestamp": datetime.datetime.now().isoformat()
             }
-            print(f"Sync failed: {e}")
+            print(f"❌ Sync failed: {e}")
             return error_summary
 
     def test_connections(self):
@@ -446,31 +574,63 @@ class ShopifyNotionSync:
 
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        """Handle GET requests for testing connections"""
-        print(f"[{datetime.datetime.now()}] GET request received - Testing connections")
+        """Handle GET requests for sync status or connection testing"""
+        print(f"[{datetime.datetime.now()}] GET request received")
         
         try:
-            # Test connections
+            # Parse query parameters
+            query_params = {}
+            if hasattr(self, 'path') and '?' in self.path:
+                query_string = self.path.split('?')[1]
+                for param in query_string.split('&'):
+                    if '=' in param:
+                        key, value = param.split('=', 1)
+                        query_params[key] = value
+            
+            endpoint = query_params.get('endpoint', 'test')
+            
             sync = ShopifyNotionSync()
-            test_results = sync.test_connections()
+            
+            if endpoint == 'status':
+                # Get sync status and statistics
+                print("Getting sync status...")
+                
+                # Get sync statistics
+                stats = sync.sync_storage.get_sync_statistics()
+                
+                # Get sync strategy
+                strategy = sync.determine_sync_strategy()
+                
+                response = {
+                    "status": "sync_status",
+                    "message": "Current sync status and statistics",
+                    "statistics": stats,
+                    "next_sync_strategy": strategy,
+                    "timestamp": datetime.datetime.now().isoformat()
+                }
+                
+            else:
+                # Default: test connections
+                print("Testing connections...")
+                test_results = sync.test_connections()
+                
+                response = {
+                    "status": "connection_test",
+                    "message": "Testing Shopify and Notion connections",
+                    "results": test_results,
+                    "timestamp": datetime.datetime.now().isoformat()
+                }
             
             self.send_response(200)
             self.send_header('Content-type', 'application/json')
             self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
             
-            response = {
-                "status": "connection_test",
-                "message": "Testing Shopify and Notion connections",
-                "results": test_results,
-                "timestamp": datetime.datetime.now().isoformat()
-            }
-            
-            print(f"Connection test results: {test_results}")
+            print(f"GET response: {response}")
             self.wfile.write(json.dumps(response, indent=2).encode())
             
         except Exception as e:
-            print(f"Connection test failed: {e}")
+            print(f"GET request failed: {e}")
             self.send_response(500)
             self.send_header('Content-type', 'application/json')
             self.send_header('Access-Control-Allow-Origin', '*')
@@ -478,7 +638,7 @@ class handler(BaseHTTPRequestHandler):
             
             error_response = {
                 "status": "error",
-                "message": f"Connection test failed: {str(e)}",
+                "message": f"Request failed: {str(e)}",
                 "timestamp": datetime.datetime.now().isoformat()
             }
             
@@ -504,11 +664,23 @@ class handler(BaseHTTPRequestHandler):
             # Create sync instance and run sync
             sync = ShopifyNotionSync()
             
-            # Get sync limit from request or default to 50
+            # Parse query parameters for sync mode
+            query_params = {}
+            if hasattr(self, 'path') and '?' in self.path:
+                query_string = self.path.split('?')[1]
+                for param in query_string.split('&'):
+                    if '=' in param:
+                        key, value = param.split('=', 1)
+                        query_params[key] = value
+
+            # Get sync parameters
+            sync_mode = query_params.get('mode', 'smart')  # 'initial' or 'smart'
             sync_limit = request_data.get('limit', 50)
             
+            print(f"Sync mode: {sync_mode}, limit: {sync_limit}")
+            
             # Perform the sync
-            sync_results = sync.sync_orders_to_notion(limit=sync_limit)
+            sync_results = sync.sync_orders_to_notion(mode=sync_mode, limit=sync_limit)
             
             # Send response
             self.send_response(200)
