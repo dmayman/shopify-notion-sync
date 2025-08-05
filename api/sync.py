@@ -94,6 +94,9 @@ class ShopifyNotionSync:
                             }}
                         }}
                         transactions {{
+                            status
+                            kind
+                            gateway
                             fees {{
                                 amount {{
                                     amount
@@ -101,6 +104,8 @@ class ShopifyNotionSync:
                                 }}
                             }}
                         }}
+                        displayFinancialStatus
+                        displayFulfillmentStatus
                         lineItems(first: 250) {{
                             edges {{
                                 node {{
@@ -181,6 +186,70 @@ class ShopifyNotionSync:
             pass
         return default
 
+    def get_payment_status(self, order):
+        """Determine payment status from Shopify order data"""
+        financial_status = order.get('displayFinancialStatus', '').lower()
+        transactions = order.get('transactions', [])
+        
+        # Map Shopify financial status to readable status
+        status_mapping = {
+            'pending': 'Pending',
+            'authorized': 'Authorized',
+            'partially_paid': 'Partially Paid',
+            'paid': 'Paid',
+            'partially_refunded': 'Partially Refunded',
+            'refunded': 'Refunded',
+            'voided': 'Voided',
+            'expired': 'Expired'
+        }
+        
+        # Use the display financial status as primary source
+        if financial_status in status_mapping:
+            return status_mapping[financial_status]
+        
+        # Fallback: analyze transactions
+        if not transactions:
+            return 'Unknown'
+        
+        # Check transaction kinds and statuses
+        has_sale = any(t.get('kind') == 'sale' and t.get('status') == 'success' for t in transactions)
+        has_refund = any(t.get('kind') == 'refund' and t.get('status') == 'success' for t in transactions)
+        has_void = any(t.get('kind') == 'void' and t.get('status') == 'success' for t in transactions)
+        
+        if has_void:
+            return 'Voided'
+        elif has_refund and has_sale:
+            return 'Partially Refunded'
+        elif has_refund:
+            return 'Refunded'
+        elif has_sale:
+            return 'Paid'
+        else:
+            return 'Pending'
+
+    def get_product_category_emoji(self, product_name):
+        """Determine custom emoji based on product category"""
+        if not product_name:
+            return None
+            
+        product_lower = product_name.lower()
+        
+        # Category mapping to custom emoji names
+        if product_lower.startswith('necklace'):
+            return 'necklace'
+        elif product_lower.startswith('bracelet'):
+            return 'bracelet'
+        elif product_lower.startswith('charm'):
+            return 'charm'
+        elif product_lower.startswith('ring'):
+            return 'ring'
+        elif product_lower.startswith('earring'):
+            return 'earring'
+        elif product_lower.startswith(('luggage', 'bag')):
+            return 'bag'
+        else:
+            return None  # No specific emoji for this category
+
     def transform_order_data(self, order):
         """Transform Shopify order data for Notion"""
         line_items = order.get('lineItems', {}).get('edges', [])
@@ -196,6 +265,9 @@ class ShopifyNotionSync:
         # Calculate order totals
         total_tax = self.get_safe_amount(order.get('totalTaxSet'))
         total_fees = self.calculate_fees(order.get('transactions', []))
+        
+        # Get payment status
+        payment_status = self.get_payment_status(order)
         
         # Process line items
         processed_items = []
@@ -249,6 +321,7 @@ class ShopifyNotionSync:
             'total_fees': total_fees,
             'total_listed': total_listed,
             'total_sold': total_sold,
+            'payment_status': payment_status,
             'is_multi_product': is_multi_product,
             'line_items': processed_items
         }
@@ -256,10 +329,18 @@ class ShopifyNotionSync:
         return result
 
     def create_notion_properties(self, order_id, product_name, date, customer_name, customer_email, 
-                                listed_for, sold_for, tax, fee, sku, shopify_url, parent_item=None):
-        """Create Notion properties object"""
+                                listed_for, sold_for, tax, fee, sku, shopify_url, payment_status=None, 
+                                is_multi_product=False, parent_item=None):
+        """Create Notion properties object with custom emoji"""
         net_earning = sold_for - fee
         to_payouts = sold_for + tax - fee
+        
+        # Determine emoji for the page
+        page_emoji = None
+        if is_multi_product:
+            page_emoji = 'shopping_bags'
+        else:
+            page_emoji = self.get_product_category_emoji(product_name)
         
         properties = {
             "Order ID": {
@@ -283,7 +364,7 @@ class ShopifyNotionSync:
             "Net earning": {
                 "number": net_earning
             },
-            "To payouts": {
+            "Payout": {
                 "number": to_payouts
             }
         }
@@ -299,10 +380,12 @@ class ShopifyNotionSync:
             properties["SKU"] = {"rich_text": [{"text": {"content": sku}}]}
         if shopify_url:
             properties["Shopify URL"] = {"url": shopify_url}
+        if payment_status:
+            properties["Payment Status"] = {"rich_text": [{"text": {"content": payment_status}}]}
         if parent_item:
             properties["Parent item"] = {"relation": [{"id": parent_item}]}
             
-        return properties
+        return properties, page_emoji
 
     def delete_notion_pages(self, page_ids):
         """Delete existing Notion pages"""
@@ -319,6 +402,22 @@ class ShopifyNotionSync:
                 print(f"🗑️  Archived Notion page {page_id}")
             except Exception as e:
                 print(f"⚠️  Failed to archive page {page_id}: {e}")
+
+    def create_notion_page_with_emoji(self, properties, emoji_name=None):
+        """Create Notion page with custom emoji if provided"""
+        page_data = {
+            "parent": {"database_id": self.notion_database_id},
+            "properties": properties
+        }
+        
+        # Add custom emoji if provided
+        if emoji_name:
+            page_data["icon"] = {
+                "type": "emoji",
+                "emoji": f":{emoji_name}:"
+            }
+        
+        return self.notion.pages.create(**page_data)
 
     def create_notion_page(self, order_data):
         """Create Notion pages for order (parent + line items if multi-product)"""
@@ -340,7 +439,7 @@ class ShopifyNotionSync:
             if transformed_data['is_multi_product']:
                 # Create parent page
                 parent_product_name = f"{len(transformed_data['line_items'])} products"
-                parent_properties = self.create_notion_properties(
+                parent_properties, parent_emoji = self.create_notion_properties(
                     order_id=transformed_data['order_id'],
                     product_name=parent_product_name,
                     date=transformed_data['order_date'],
@@ -351,12 +450,14 @@ class ShopifyNotionSync:
                     tax=transformed_data['total_tax'],
                     fee=transformed_data['total_fees'],
                     sku="",
-                    shopify_url=transformed_data['shopify_url']
+                    shopify_url=transformed_data['shopify_url'],
+                    payment_status=transformed_data['payment_status'],
+                    is_multi_product=True
                 )
                 
-                parent_response = self.notion.pages.create(
-                    parent={"database_id": self.notion_database_id},
-                    properties=parent_properties
+                parent_response = self.create_notion_page_with_emoji(
+                    properties=parent_properties,
+                    emoji_name=parent_emoji
                 )
                 created_pages.append(parent_response)
                 parent_page_id = parent_response['id']
@@ -367,7 +468,7 @@ class ShopifyNotionSync:
                 for idx, line_item in enumerate(transformed_data['line_items']):
                     line_item_id = f"{transformed_data['order_id']}.{idx + 1}"
                     
-                    line_properties = self.create_notion_properties(
+                    line_properties, line_emoji = self.create_notion_properties(
                         order_id=line_item_id,
                         product_name=line_item['product_name'],
                         date=None,
@@ -379,12 +480,14 @@ class ShopifyNotionSync:
                         fee=0,
                         sku=line_item['sku'],
                         shopify_url="",
+                        payment_status=None,
+                        is_multi_product=False,
                         parent_item=parent_page_id
                     )
                     
-                    line_response = self.notion.pages.create(
-                        parent={"database_id": self.notion_database_id},
-                        properties=line_properties
+                    line_response = self.create_notion_page_with_emoji(
+                        properties=line_properties,
+                        emoji_name=line_emoji
                     )
                     created_pages.append(line_response)
                     
@@ -396,7 +499,7 @@ class ShopifyNotionSync:
             else:
                 # Single product order
                 line_item = transformed_data['line_items'][0]
-                single_properties = self.create_notion_properties(
+                single_properties, single_emoji = self.create_notion_properties(
                     order_id=transformed_data['order_id'],
                     product_name=line_item['product_name'],
                     date=transformed_data['order_date'],
@@ -407,12 +510,14 @@ class ShopifyNotionSync:
                     tax=transformed_data['total_tax'],
                     fee=transformed_data['total_fees'],
                     sku=line_item['sku'],
-                    shopify_url=transformed_data['shopify_url']
+                    shopify_url=transformed_data['shopify_url'],
+                    payment_status=transformed_data['payment_status'],
+                    is_multi_product=False
                 )
                 
-                single_response = self.notion.pages.create(
-                    parent={"database_id": self.notion_database_id},
-                    properties=single_properties
+                single_response = self.create_notion_page_with_emoji(
+                    properties=single_properties,
+                    emoji_name=single_emoji
                 )
                 created_pages.append(single_response)
                 

@@ -15,7 +15,9 @@ class SyncBlobStorage:
         if not self.blob_read_write_token:
             raise ValueError("BLOB_READ_WRITE_TOKEN environment variable is required")
         
-        self.sync_state_url = "https://blob.vercel-storage.com/sync-state.json"
+        # Use the Vercel Blob API endpoint for uploading with a fixed pathname
+        self.blob_api_url = "https://blob.vercel-storage.com"
+        self.sync_state_filename = "sync-state.json"
         
     def _make_request(self, method: str, url: str, **kwargs):
         """Make authenticated request to Vercel Blob API"""
@@ -32,8 +34,31 @@ class SyncBlobStorage:
     def get_sync_state(self) -> Dict:
         """Get current sync state from blob storage"""
         try:
-            response = self._make_request('GET', self.sync_state_url)
-            return response.json()
+            # List all blobs to find our sync state file
+            list_url = f"{self.blob_api_url}/list"
+            response = self._make_request('GET', list_url)
+            blobs = response.json().get('blobs', [])
+            
+            # Find the sync state file
+            sync_state_blob = None
+            for blob in blobs:
+                if blob.get('pathname') == self.sync_state_filename:
+                    sync_state_blob = blob
+                    break
+            
+            if not sync_state_blob:
+                # File doesn't exist yet, return initial state
+                return {
+                    "last_sync": None,
+                    "synced_orders": {},
+                    "failed_orders": []
+                }
+            
+            # Get the content of the sync state file
+            content_response = requests.get(sync_state_blob['url'])
+            content_response.raise_for_status()
+            return content_response.json()
+            
         except requests.exceptions.RequestException as e:
             if "404" in str(e):
                 # File doesn't exist yet, return initial state
@@ -45,19 +70,51 @@ class SyncBlobStorage:
             raise e
     
     def save_sync_state(self, sync_state: Dict):
-        """Save sync state to blob storage"""
-        # For Vercel Blob, we use PUT with the JSON content
+        """Save sync state to blob storage with fixed filename"""
+        # First, delete any existing sync state files to avoid duplicates
+        try:
+            self._cleanup_old_sync_files()
+        except Exception as e:
+            print(f"Warning: Could not cleanup old files: {e}")
+        
+        # Upload new sync state with fixed pathname
+        upload_url = f"{self.blob_api_url}?filename={self.sync_state_filename}"
+        
         headers = {
             'Content-Type': 'application/json'
         }
         
         response = self._make_request(
             'PUT', 
-            self.sync_state_url,
+            upload_url,
             headers=headers,
             data=json.dumps(sync_state, indent=2)
         )
         return response.json()
+    
+    def _cleanup_old_sync_files(self):
+        """Delete old sync state files to prevent accumulation"""
+        try:
+            # List all blobs
+            list_url = f"{self.blob_api_url}/list"
+            response = self._make_request('GET', list_url)
+            blobs = response.json().get('blobs', [])
+            
+            # Find and delete old sync state files (keep only the newest one)
+            sync_files = [blob for blob in blobs if 'sync-state' in blob.get('pathname', '')]
+            
+            # Sort by creation time, keep the newest, delete the rest
+            if len(sync_files) > 1:
+                sync_files.sort(key=lambda x: x.get('uploadedAt', ''), reverse=True)
+                files_to_delete = sync_files[1:]  # Keep the first (newest), delete the rest
+                
+                for old_file in files_to_delete:
+                    delete_url = f"{self.blob_api_url}/delete?url={old_file['url']}"
+                    self._make_request('POST', delete_url)
+                    print(f"🗑️  Deleted old sync file: {old_file['pathname']}")
+        
+        except Exception as e:
+            print(f"Could not cleanup old sync files: {e}")
     
     def get_last_sync(self) -> Optional[str]:
         """Get last successful sync timestamp"""
