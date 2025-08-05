@@ -13,7 +13,7 @@ class SyncBlobStorage:
     def __init__(self):
         self.blob_read_write_token = os.getenv('BLOB_READ_WRITE_TOKEN')
         if not self.blob_read_write_token:
-            raise ValueError("BLOB_READ_WRITE_TOKEN environment variable is required")
+            raise ValueError("BLOB_READ_WRITE_TOKEN environment variable must be set to interact with Vercel Blob storage.")
         
         # Get the blob store URL from environment (project-specific)
         self.blob_api_url = os.getenv('BLOB_STORE_URL', 'https://blob.vercel-storage.com')
@@ -26,12 +26,9 @@ class SyncBlobStorage:
             **kwargs.get('headers', {})
         }
         
-        # Only set headers if we're not uploading files (multipart)
-        if 'files' not in kwargs:
-            kwargs['headers'] = headers
-        else:
-            # For file uploads, only set Authorization header
-            kwargs['headers'] = {'Authorization': f'Bearer {self.blob_read_write_token}'}
+        #  Merge headers instead of overwriting
+        headers.update(kwargs.get('headers', {}))
+        kwargs['headers'] = headers
         
         response = requests.request(method, url, **kwargs)
         response.raise_for_status()
@@ -51,14 +48,25 @@ class SyncBlobStorage:
             if sync_state_url:
                 # Try to fetch the existing sync state
                 response = requests.get(sync_state_url)
-                response.raise_for_status()
+                response.raise_for_status() # Ensure request was successful
                 return response.json()
-            else:
-                # No URL stored yet, return initial state
+            elif os.getenv('BLOB_STORE_URL'):
+                # If blob store URL is defined but no sync state URL, it means the file may not exist
+                # in that case, return initial state
+                print("📄 No existing sync state found, using initial state")
                 return {
                     "last_sync": None,
                     "synced_orders": {},
                     "failed_orders": []
+                }
+            else:
+                # No URL stored yet, return initial state and warn that URL is not defined
+                print("📄 No existing sync state found and BLOB_STORE_URL is not defined.")
+                return {
+                    "last_sync": None,
+                    "synced_orders": {},
+                    "failed_orders": []
+
                 }
                 
         except requests.exceptions.RequestException as e:
@@ -76,42 +84,36 @@ class SyncBlobStorage:
                 "last_sync": None,
                 "synced_orders": {},
                 "failed_orders": []
+
             }
     
     def save_sync_state(self, sync_state: Dict):
-        """Save sync state - try blob storage, fallback to in-memory"""
-        try:
-            # Try to use Vercel Blob storage
-            upload_url = f"{self.blob_api_url}"
-            
-            # Use multipart form data for file upload
-            files = {
-                'file': (self.sync_state_filename, json.dumps(sync_state, indent=2), 'application/json')
-            }
-            
-            response = self._make_request(
-                'POST', 
-                upload_url,
-                files=files
-            )
-            
-            result = response.json()
-            
-            # Store the blob URL for future reads (if available in response)
-            if 'url' in result:
-                print(f"💾 Sync state uploaded to blob storage. URL: {result['url']}")
-            
-            return result
-            
-        except Exception as e:
-            print(f"⚠️  Blob storage failed ({e}), using fallback approach")
-            # Fallback: store in memory for this session
-            self._memory_sync_state = sync_state
-            print(f"💾 Sync state stored in memory as fallback")
-            return {"status": "fallback_memory"}
-    
-    def get_last_sync(self) -> Optional[str]:
-        """Get last successful sync timestamp"""
+        """Save sync state to Vercel Blob storage using correct API"""
+        # Use PUT method with token as query parameter (per Vercel Blob docs)
+        upload_url = f"{self.blob_api_url}/{self.sync_state_filename}?token={self.blob_read_write_token}"
+        
+        headers = {
+            'Content-Type': 'application/json'
+        }
+        
+        # Convert sync state to JSON string
+        json_content = json.dumps(sync_state, indent=2)
+        
+        response = requests.put(upload_url, data=json_content, headers=headers)
+        response.raise_for_status()
+        
+        result = response.json()
+        
+        # Store the blob URL for future reads
+        if 'url' in result:
+            # Store the URL for future reads (you could set this as env var)
+            print(f"💾 Sync state uploaded to blob storage. URL: {result['url']}")
+            self._blob_url = result['url']
+
+            # Set environment variable for SYNC_STATE_BLOB_URL
+            os.environ['SYNC_STATE_BLOB_URL'] = result['url']
+
+        
         sync_state = self.get_sync_state()
         return sync_state.get('last_sync')
     
@@ -173,3 +175,7 @@ class SyncBlobStorage:
             'failed_orders_count': len(sync_state.get('failed_orders', [])),
             'failed_orders': sync_state.get('failed_orders', [])
         }
+
+    def get_last_sync(self) -> Optional[str]:
+        """Get last successful sync timestamp"""
+        sync_state = self.get_sync_state()
