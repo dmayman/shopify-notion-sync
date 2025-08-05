@@ -304,7 +304,6 @@ class ShopifyNotionSync:
                 # Create line item pages
                 for idx, line_item in enumerate(transformed_data['line_items']):
                     line_item_id = f"{transformed_data['order_id']}.{idx + 1}"
-                    line_item_fee = transformed_data['total_fees'] * (line_item['sold_for'] / transformed_data['total_sold']) if transformed_data['total_sold'] > 0 else 0
                     
                     line_properties = self.create_notion_properties(
                         order_id=line_item_id,
@@ -315,7 +314,7 @@ class ShopifyNotionSync:
                         listed_for=line_item['listed_for'],
                         sold_for=line_item['sold_for'],
                         tax=0,
-                        fee=line_item_fee,
+                        fee=0,
                         sku=line_item['sku'],
                         shopify_url="",
                         parent_item=parent_page_id
