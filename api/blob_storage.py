@@ -25,7 +25,13 @@ class SyncBlobStorage:
             'Authorization': f'Bearer {self.blob_read_write_token}',
             **kwargs.get('headers', {})
         }
-        kwargs['headers'] = headers
+        
+        # Only set headers if we're not uploading files (multipart)
+        if 'files' not in kwargs:
+            kwargs['headers'] = headers
+        else:
+            # For file uploads, only set Authorization header
+            kwargs['headers'] = {'Authorization': f'Bearer {self.blob_read_write_token}'}
         
         response = requests.request(method, url, **kwargs)
         response.raise_for_status()
@@ -77,18 +83,19 @@ class SyncBlobStorage:
         except Exception as e:
             print(f"Warning: Could not cleanup old files: {e}")
         
-        # Upload new sync state with fixed pathname
-        upload_url = f"{self.blob_api_url}?filename={self.sync_state_filename}"
+        # Upload new sync state using multipart form data (Vercel Blob format)
+        upload_url = f"{self.blob_api_url}"
         
-        headers = {
-            'Content-Type': 'application/json'
+        # Use multipart form data for file upload
+        files = {
+            'file': (self.sync_state_filename, json.dumps(sync_state, indent=2), 'application/json')
         }
         
+        # Remove Content-Type header to let requests set it for multipart
         response = self._make_request(
-            'PUT', 
+            'POST', 
             upload_url,
-            headers=headers,
-            data=json.dumps(sync_state, indent=2)
+            files=files
         )
         return response.json()
     
