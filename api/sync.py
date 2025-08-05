@@ -55,25 +55,64 @@ class ShopifyNotionSync:
         return data
 
     def get_recent_orders(self, limit=10):
-        """Get recent orders from Shopify - simplified version"""
+        """Get recent orders from Shopify with all required fields (last 7 days)"""
+        # Calculate date 7 days ago
+        from datetime import datetime, timedelta
+        seven_days_ago = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        
+        print(f"Fetching orders from {seven_days_ago} to now")
+        
         query = f"""
         query {{
-            orders(first: {limit}, sortKey: CREATED_AT, reverse: true) {{
+            orders(first: {limit}, sortKey: CREATED_AT, reverse: true, query: "created_at:>={seven_days_ago}") {{
                 edges {{
                     node {{
                         id
+                        legacyResourceId
                         name
                         createdAt
-                        totalPriceSet {{
-                            shopMoney {{
+                        email
+                        customer {{
+                            displayName
+                        }}
+                        totalTaxSet {{
+                            presentmentMoney {{
                                 amount
                                 currencyCode
                             }}
                         }}
-                        customer {{
-                            firstName
-                            lastName
-                            email
+                        transactions {{
+                            fees {{
+                                amount {{
+                                    amount
+                                    currencyCode
+                                }}
+                            }}
+                        }}
+                        lineItems(first: 250) {{
+                            edges {{
+                                node {{
+                                    id
+                                    title
+                                    variant {{
+                                        title
+                                        sku
+                                    }}
+                                    originalUnitPriceSet {{
+                                        presentmentMoney {{
+                                            amount
+                                            currencyCode
+                                        }}
+                                    }}
+                                    discountedUnitPriceSet {{
+                                        presentmentMoney {{
+                                            amount
+                                            currencyCode
+                                        }}
+                                    }}
+                                    quantity
+                                }}
+                            }}
                         }}
                     }}
                 }}
@@ -83,86 +122,243 @@ class ShopifyNotionSync:
         
         return self.fetch_shopify_data(query)
 
+    def calculate_fees(self, transactions):
+        """Calculate total fees from order transactions"""
+        total_fees = 0.0
+        try:
+            for transaction in transactions:
+                if transaction.get('fees'):
+                    for fee in transaction['fees']:
+                        if fee.get('amount', {}).get('amount'):
+                            total_fees += float(fee['amount']['amount'])
+        except (KeyError, ValueError, TypeError):
+            pass
+        return total_fees
+
+    def get_safe_amount(self, price_set, default=0.0):
+        """Safely extract amount from Shopify price set structure"""
+        try:
+            if price_set and price_set.get('presentmentMoney') and price_set['presentmentMoney'].get('amount'):
+                return float(price_set['presentmentMoney']['amount'])
+        except (KeyError, ValueError, TypeError):
+            pass
+        return default
+
+    def transform_order_data(self, order):
+        """Transform Shopify order data for Notion"""
+        line_items = order.get('lineItems', {}).get('edges', [])
+        
+        # Base order data
+        order_id = order['name']
+        order_date = order['createdAt']
+        customer_name = order.get('customer', {}).get('displayName', '') if order.get('customer') else ''
+        customer_email = order.get('email', '')
+        legacy_id = order.get('legacyResourceId', '')
+        shopify_url = f"https://admin.shopify.com/store/lil-nice-thing/orders/{legacy_id}" if legacy_id else ''
+        
+        # Calculate order totals
+        total_tax = self.get_safe_amount(order.get('totalTaxSet'))
+        total_fees = self.calculate_fees(order.get('transactions', []))
+        
+        # Process line items
+        processed_items = []
+        total_listed = 0.0
+        total_sold = 0.0
+        
+        for item_edge in line_items:
+            item = item_edge['node']
+            
+            # Get product info
+            product_title = item.get('title', '')
+            variant_title = item.get('variant', {}).get('title', '') if item.get('variant') else ''
+            sku = item.get('variant', {}).get('sku', '') if item.get('variant') else ''
+            
+            # Create product name
+            if variant_title and variant_title != 'Default Title':
+                product_name = f"{product_title} – {variant_title}"
+            else:
+                product_name = product_title
+            
+            # Get pricing
+            original_price = self.get_safe_amount(item.get('originalUnitPriceSet'))
+            discounted_price = self.get_safe_amount(item.get('discountedUnitPriceSet'))
+            quantity = item.get('quantity', 1)
+            
+            # Calculate line totals
+            line_listed = original_price * quantity
+            line_sold = discounted_price * quantity
+            
+            total_listed += line_listed
+            total_sold += line_sold
+            
+            processed_items.append({
+                'product_name': product_name,
+                'sku': sku,
+                'listed_for': line_listed,
+                'sold_for': line_sold,
+                'quantity': quantity
+            })
+        
+        # Determine if multi-product order
+        is_multi_product = len(processed_items) > 1
+        
+        result = {
+            'order_id': order_id,
+            'order_date': order_date,
+            'customer_name': customer_name,
+            'customer_email': customer_email,
+            'shopify_url': shopify_url,
+            'total_tax': total_tax,
+            'total_fees': total_fees,
+            'total_listed': total_listed,
+            'total_sold': total_sold,
+            'is_multi_product': is_multi_product,
+            'line_items': processed_items
+        }
+        
+        return result
+
+    def create_notion_properties(self, order_id, product_name, date, customer_name, customer_email, 
+                                listed_for, sold_for, tax, fee, sku, shopify_url, parent_item=None):
+        """Create Notion properties object"""
+        net_earning = sold_for - fee
+        to_payouts = sold_for + tax - fee
+        
+        properties = {
+            "Order ID": {
+                "title": [{"text": {"content": order_id}}]
+            },
+            "Product name": {
+                "rich_text": [{"text": {"content": product_name}}]
+            },
+            "Listed for": {
+                "number": listed_for
+            },
+            "Sold for": {
+                "number": sold_for
+            },
+            "Tax": {
+                "number": tax
+            },
+            "Fee": {
+                "number": fee
+            },
+            "Net earning": {
+                "number": net_earning
+            },
+            "To payouts": {
+                "number": to_payouts
+            }
+        }
+        
+        # Add optional fields
+        if date:
+            properties["Date"] = {"date": {"start": date}}
+        if customer_name:
+            properties["Customer name"] = {"rich_text": [{"text": {"content": customer_name}}]}
+        if customer_email:
+            properties["Customer Email"] = {"email": customer_email}
+        if sku:
+            properties["SKU"] = {"rich_text": [{"text": {"content": sku}}]}
+        if shopify_url:
+            properties["Shopify URL"] = {"url": shopify_url}
+        if parent_item:
+            properties["Parent item"] = {"relation": [{"id": parent_item}]}
+            
+        return properties
+
     def create_notion_page(self, order_data):
-        """Create a new page in Notion database - simplified version"""
+        """Create Notion pages for order (parent + line items if multi-product)"""
         try:
             order = order_data['node']
+            transformed_data = self.transform_order_data(order)
             
-            # Extract basic information
-            order_id = order['name']  # This is like "#1001"
-            created_date = order['createdAt']
+            created_pages = []
             
-            # Get total price and currency
-            total_amount = "0"
-            currency = "USD"
-            if order.get('totalPriceSet') and order['totalPriceSet'].get('shopMoney'):
-                total_amount = order['totalPriceSet']['shopMoney']['amount']
-                currency = order['totalPriceSet']['shopMoney']['currencyCode']
-                        
-            # Prepare properties for Notion (only basic fields)
-            properties = {
-                "Order ID": {
-                    "title": [
-                        {
-                            "text": {
-                                "content": order_id
-                            }
-                        }
-                    ]
-                },
-                "Total": {
-                    "number": float(total_amount)
-                },
-                "Currency": {
-                    "rich_text": [
-                        {
-                            "text": {
-                                "content": currency
-                            }
-                        }
-                    ]
-                },
-                "Created": {
-                    "date": {
-                        "start": created_date
-                    }
-                }
-            }
-            
-            # Add customer info if available
-            if order.get('customer'):
-                customer = order['customer']
-                customer_name = f"{customer.get('firstName', '')} {customer.get('lastName', '')}".strip()
-                if customer_name:
-                    properties["Customer"] = {
-                        "rich_text": [
-                            {
-                                "text": {
-                                    "content": customer_name
-                                }
-                            }
-                        ]
-                    }
+            if transformed_data['is_multi_product']:
+                # Create parent page
+                parent_product_name = f"{len(transformed_data['line_items'])} products"
+                parent_properties = self.create_notion_properties(
+                    order_id=transformed_data['order_id'],
+                    product_name=parent_product_name,
+                    date=transformed_data['order_date'],
+                    customer_name=transformed_data['customer_name'],
+                    customer_email=transformed_data['customer_email'],
+                    listed_for=transformed_data['total_listed'],
+                    sold_for=transformed_data['total_sold'],
+                    tax=transformed_data['total_tax'],
+                    fee=transformed_data['total_fees'],
+                    sku="",
+                    shopify_url=transformed_data['shopify_url']
+                )
                 
-                if customer.get('email'):
-                    properties["Email"] = {
-                        "email": customer['email']
-                    }
+                parent_response = self.notion.pages.create(
+                    parent={"database_id": self.notion_database_id},
+                    properties=parent_properties
+                )
+                created_pages.append(parent_response)
+                parent_page_id = parent_response['id']
+                
+                print(f"✅ Created parent page for order {transformed_data['order_id']}")
+                
+                # Create line item pages
+                for idx, line_item in enumerate(transformed_data['line_items']):
+                    line_item_id = f"{transformed_data['order_id']}.{idx + 1}"
+                    line_item_fee = transformed_data['total_fees'] * (line_item['sold_for'] / transformed_data['total_sold']) if transformed_data['total_sold'] > 0 else 0
+                    
+                    line_properties = self.create_notion_properties(
+                        order_id=line_item_id,
+                        product_name=line_item['product_name'],
+                        date=None,
+                        customer_name=None,
+                        customer_email=None,
+                        listed_for=line_item['listed_for'],
+                        sold_for=line_item['sold_for'],
+                        tax=0,
+                        fee=line_item_fee,
+                        sku=line_item['sku'],
+                        shopify_url="",
+                        parent_item=parent_page_id
+                    )
+                    
+                    line_response = self.notion.pages.create(
+                        parent={"database_id": self.notion_database_id},
+                        properties=line_properties
+                    )
+                    created_pages.append(line_response)
+                    
+                print(f"✅ Created {len(transformed_data['line_items'])} line item pages")
+                
+            else:
+                # Single product order
+                line_item = transformed_data['line_items'][0]
+                single_properties = self.create_notion_properties(
+                    order_id=transformed_data['order_id'],
+                    product_name=line_item['product_name'],
+                    date=transformed_data['order_date'],
+                    customer_name=transformed_data['customer_name'],
+                    customer_email=transformed_data['customer_email'],
+                    listed_for=line_item['listed_for'],
+                    sold_for=line_item['sold_for'],
+                    tax=transformed_data['total_tax'],
+                    fee=transformed_data['total_fees'],
+                    sku=line_item['sku'],
+                    shopify_url=transformed_data['shopify_url']
+                )
+                
+                single_response = self.notion.pages.create(
+                    parent={"database_id": self.notion_database_id},
+                    properties=single_properties
+                )
+                created_pages.append(single_response)
+                
+                print(f"✅ Created single product page for order {transformed_data['order_id']}")
             
-            print(f"Creating Notion page with properties: {json.dumps(properties, indent=2)}")
-            
-            # Create the page
-            response = self.notion.pages.create(
-                parent={"database_id": self.notion_database_id},
-                properties=properties
-            )
-            
-            print(f"✅ Created Notion page for order {order_id}")
-            return response
+            return created_pages
             
         except Exception as e:
             print(f"❌ Error creating Notion page for order {order_data['node']['name']}: {e}")
-            print(f"Order data: {json.dumps(order_data, indent=2)}")
+            print(f"Error details: {str(e)}")
             return None
 
     def sync_orders_to_notion(self, limit=5):
@@ -177,14 +373,16 @@ class ShopifyNotionSync:
             print(f"Found {len(orders)} orders to sync")
             
             # Track results
-            created_count = 0
+            created_pages_count = 0
+            processed_orders = 0
             errors = []
             
             # Create Notion pages for each order
             for order_data in orders:
                 result = self.create_notion_page(order_data)
                 if result:
-                    created_count += 1
+                    processed_orders += 1
+                    created_pages_count += len(result)  # result is now a list of created pages
                 else:
                     errors.append(order_data['node']['name'])
             
@@ -192,12 +390,13 @@ class ShopifyNotionSync:
             summary = {
                 "status": "success",
                 "total_orders": len(orders),
-                "created_pages": created_count,
+                "processed_orders": processed_orders,
+                "created_pages": created_pages_count,
                 "errors": errors,
                 "timestamp": datetime.datetime.now().isoformat()
             }
             
-            print(f"Sync completed: {created_count}/{len(orders)} pages created")
+            print(f"Sync completed: {processed_orders}/{len(orders)} orders processed, {created_pages_count} total pages created")
             return summary
             
         except Exception as e:

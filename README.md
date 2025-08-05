@@ -26,7 +26,8 @@ You can test the endpoint by visiting:
 
 This project is deployed on Vercel. Any push to the main branch will automatically deploy.
 
-## Environment Variables (Coming Soon)
+## Environment Variables 
+These are private and set in Vercel.
 
 - `SHOPIFY_STORE_URL`
 - `SHOPIFY_ACCESS_TOKEN` 
