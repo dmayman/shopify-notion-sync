@@ -55,16 +55,16 @@ class ShopifyNotionSync:
         return data
 
     def get_recent_orders(self, limit=10):
-        """Get recent orders from Shopify with all required fields (last 7 days)"""
-        # Calculate date 7 days ago
-        from datetime import datetime, timedelta
-        seven_days_ago = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        """Get orders from Shopify between July 14-22, 2024"""
+        # Set specific date range for testing
+        start_date = "2024-07-14T00:00:00Z"
+        end_date = "2024-07-22T23:59:59Z"
         
-        print(f"Fetching orders from {seven_days_ago} to now")
+        print(f"Fetching orders from {start_date} to {end_date}")
         
         query = f"""
         query {{
-            orders(first: {limit}, sortKey: CREATED_AT, reverse: true, query: "created_at:>={seven_days_ago}") {{
+            orders(first: {limit}, sortKey: CREATED_AT, reverse: true, query: "created_at:>={start_date} AND created_at:<={end_date}") {{
                 edges {{
                     node {{
                         id
