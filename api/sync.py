@@ -104,7 +104,7 @@ class ShopifyNotionSync:
                                             currencyCode
                                         }}
                                     }}
-                                    discountedUnitPriceSet {{
+                                    discountedUnitPriceAfterAllDiscountsSet {{
                                         presentmentMoney {{
                                             amount
                                             currencyCode
@@ -181,7 +181,7 @@ class ShopifyNotionSync:
             
             # Get pricing
             original_price = self.get_safe_amount(item.get('originalUnitPriceSet'))
-            discounted_price = self.get_safe_amount(item.get('discountedUnitPriceSet'))
+            discounted_price = self.get_safe_amount(item.get('discountedUnitPriceAfterAllDiscountsSet'))
             quantity = item.get('quantity', 1)
             
             # Calculate line totals
