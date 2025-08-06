@@ -95,9 +95,16 @@ class SyncBlobStorage:
         """End batch mode and write accumulated changes to blob"""
         if self.batch_mode and self.cached_sync_state:
             print("💾 Ending batch mode - writing all changes to blob")
-            success = self.save_sync_state(self.cached_sync_state)
+            
+            # Save the state before disabling batch mode
+            state_to_save = self.cached_sync_state.copy()
+            
+            # Disable batch mode first so save_sync_state writes to blob
             self.batch_mode = False
             self.cached_sync_state = None
+            
+            # Now actually write to blob
+            success = self.save_sync_state(state_to_save)
             return success
         return True
 
