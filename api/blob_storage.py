@@ -39,13 +39,38 @@ class SyncBlobStorage:
                         blob_url = blob.get('url') or blob.get('downloadUrl')
                         print(f"📖 Found sync state file: {blob_url}")
                         
-                        # Download the existing file content
-                        response = requests.get(blob_url)
-                        response.raise_for_status()
-                        content = response.text
-                        print(f"📄 Read sync state data: {len(content)} chars")
+                        try:
+                            # Download the existing file content with retry logic
+                            response = requests.get(blob_url, timeout=10)
+                            response.raise_for_status()
+                            content = response.text.strip()
+                            
+                            if not content:
+                                print("📄 Blob exists but is empty, using initial state")
+                                return None
+                            
+                            print(f"📄 Read sync state data: {len(content)} chars")
+                            parsed_data = json.loads(content)
+                            
+                            # Validate the parsed data has required structure
+                            if not isinstance(parsed_data, dict):
+                                print("📄 Invalid sync state format, using initial state")
+                                return None
+                                
+                            return parsed_data
+                            
+                        except requests.exceptions.RequestException as req_error:
+                            print(f"📄 HTTP error reading blob: {req_error}")
+                            if "403" in str(req_error) or "Forbidden" in str(req_error):
+                                print("📄 Blob access forbidden - URL may have changed after write")
+                                # Try to continue with a fresh list attempt (but not infinite retry)
+                                return None
+                            raise
                         
-                        return json.loads(content)
+                        except json.JSONDecodeError as json_error:
+                            print(f"📄 JSON parse error: {json_error}")
+                            print(f"📄 Raw content: {content[:200]}...")
+                            return None
             
             print("📄 No existing sync state found")
             return None
@@ -68,6 +93,10 @@ class SyncBlobStorage:
             json_content = json.dumps(sync_state, indent=2)
             print(f"💾 Writing sync state: {len(json_content)} chars")
             
+            # Add a small delay to avoid rapid write-read cycles
+            import time
+            time.sleep(0.1)
+            
             upload_result = vercel_blob.put(
                 self.sync_state_filename, 
                 json_content.encode('utf-8'),
@@ -76,6 +105,9 @@ class SyncBlobStorage:
             
             if upload_result and 'url' in upload_result:
                 print(f"✅ Sync state saved! URL: {upload_result['url']}")
+                
+                # Add another small delay after write to allow blob to settle
+                time.sleep(0.1)
                 return True
             else:
                 print(f"⚠️ Upload result: {upload_result}")
