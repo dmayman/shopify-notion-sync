@@ -398,20 +398,25 @@ class ShopifyNotionSync:
         return properties, page_emoji
 
     def delete_notion_pages(self, page_ids):
-        """Delete existing Notion pages"""
+        """Archive existing Notion pages (parent + line items)"""
         if isinstance(page_ids, str):
             page_ids = [page_ids]
         
-        for page_id in page_ids:
+        if not page_ids:
+            return
+            
+        print(f"🗑️ Archiving {len(page_ids)} existing pages...")
+        
+        for i, page_id in enumerate(page_ids, 1):
             try:
                 # Notion doesn't have a delete API, so we archive the page
                 self.notion.pages.update(
                     page_id=page_id,
                     archived=True
                 )
-                print(f"🗑️  Archived Notion page {page_id}")
+                print(f"  🗑️ Archived page {i}/{len(page_ids)}: {page_id}")
             except Exception as e:
-                print(f"⚠️  Failed to archive page {page_id}: {e}")
+                print(f"  ⚠️ Failed to archive page {page_id}: {e}")
 
     def create_notion_page_with_emoji(self, properties):
         """Create Notion page with rate limiting"""
@@ -433,12 +438,11 @@ class ShopifyNotionSync:
             order_id = transformed_data['order_id']
             
             # Check if order already exists (for updates)
-            existing_page_id = self.sync_storage.get_synced_order_page_id(order_id)
-            if existing_page_id:
-                print(f"🔄 Order {order_id} exists - archiving old pages")
-                # For multi-product orders, we might have multiple pages to archive
-                # For now, just archive the main page (could be improved to track line items)
-                self.delete_notion_pages(existing_page_id)
+            existing_page_ids = self.sync_storage.get_synced_order_page_ids(order_id)
+            if existing_page_ids:
+                print(f"🔄 Order {order_id} exists - archiving {len(existing_page_ids)} old pages")
+                # Archive all existing pages (parent + line items)
+                self.delete_notion_pages(existing_page_ids)
             
             created_pages = []
 
@@ -499,9 +503,10 @@ class ShopifyNotionSync:
                     
                     print(f"  ✅ Created line item {i}/{len(transformed_data['line_items'])}: {line_item['product_name'][:30]}...")
 
-            # Record success in sync storage with updatedAt timestamp
+            # Record success in sync storage with all page IDs and updatedAt timestamp
             order_updated_at = order['updatedAt']
-            self.sync_storage.mark_order_synced(order_id, parent_response['id'], order_updated_at)
+            all_page_ids = [page['id'] for page in created_pages]
+            self.sync_storage.mark_order_synced(order_id, all_page_ids, order_updated_at)
 
             return created_pages
 
@@ -520,16 +525,20 @@ class ShopifyNotionSync:
         """Ultra-minimal sync function using Shopify's updatedAt field - batch blob writes"""
         try:
             # Check if another sync is already in progress
+            print("🔍 Checking if sync is already in progress...")
             if self.sync_storage.is_sync_in_progress():
+                print("⚠️ Another sync is already running - blocking this request")
                 return {
                     "status": "error",
                     "message": "Another sync is already in progress. Please wait for it to complete.",
                     "timestamp": datetime.datetime.now().isoformat()
                 }
             
-            # Start batch mode and sync lock
-            self.sync_storage.start_batch_mode()
+            # Start sync lock BEFORE batch mode so it gets written immediately
             self.sync_storage.start_sync_lock()
+            
+            # Now start batch mode for the rest of the sync operations
+            self.sync_storage.start_batch_mode()
             
             # Determine sync strategy
             if mode == 'initial':

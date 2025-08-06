@@ -160,39 +160,52 @@ class SyncBlobStorage:
         sync_state = self.get_sync_state()
         return sync_state.get('failed_orders', [])
 
-    def get_synced_order_page_id(self, order_id: str) -> Optional[str]:
-        """Get Notion page ID for synced order"""
+    def get_synced_order_page_ids(self, order_id: str) -> list:
+        """Get all Notion page IDs for synced order (parent + line items)"""
         sync_state = self.get_sync_state()
         synced_order = sync_state.get('synced_orders', {}).get(order_id)
         
-        # Handle both old format (string) and new format (dict)
-        if isinstance(synced_order, dict):
-            return synced_order.get('notion_page_id')
-        else:
-            return synced_order  # String format (backward compatibility)
+        if isinstance(synced_order, list):
+            # New simplified format - direct array of page IDs
+            return synced_order
+        elif isinstance(synced_order, dict):
+            # Legacy dict formats
+            if 'notion_page_ids' in synced_order:
+                return synced_order.get('notion_page_ids', [])
+            elif 'notion_page_id' in synced_order:
+                return [synced_order.get('notion_page_id')]
+        elif isinstance(synced_order, str):
+            # Very old format - single string page ID
+            return [synced_order]
+        
+        return []
 
-    def mark_order_synced(self, order_id: str, notion_page_id: str, updated_at: str = None):
-        """Mark order as successfully synced with updatedAt timestamp"""
+    def get_synced_order_page_id(self, order_id: str) -> Optional[str]:
+        """Get primary Notion page ID for synced order (backward compatibility)"""
+        page_ids = self.get_synced_order_page_ids(order_id)
+        return page_ids[0] if page_ids else None
+
+    def mark_order_synced(self, order_id: str, notion_page_ids: list, updated_at: str = None):
+        """Mark order as successfully synced with all page IDs (parent + line items)"""
         sync_state = self.get_sync_state()
         
-        # Store both page ID and updatedAt timestamp
+        # Handle both single page ID (string) and multiple page IDs (list)
+        if isinstance(notion_page_ids, str):
+            notion_page_ids = [notion_page_ids]
+        
+        # Store just the page IDs array - no need for per-order timestamps
+        sync_state['synced_orders'][order_id] = notion_page_ids
+        
+        # Update global resume point if timestamp provided
         if updated_at:
-            sync_state['synced_orders'][order_id] = {
-                "notion_page_id": notion_page_id,
-                "updated_at": updated_at
-            }
-            # Update resume point
             sync_state['last_processed_updated_at'] = updated_at
-        else:
-            # Fallback to simple string for backward compatibility
-            sync_state['synced_orders'][order_id] = notion_page_id
         
         # Remove from failed orders if it was there
         if order_id in sync_state.get('failed_orders', []):
             sync_state['failed_orders'].remove(order_id)
         
         if self.save_sync_state(sync_state):
-            print(f"✅ Marked order {order_id} as synced")
+            print(f"✅ Marked order {order_id} as synced with {len(notion_page_ids)} pages")
         else:
             print(f"❌ Failed to mark order {order_id} as synced")
 
@@ -237,8 +250,12 @@ class SyncBlobStorage:
             print(f"❌ Failed to update resume point")
 
     def is_sync_in_progress(self) -> bool:
-        """Check if a sync is currently in progress"""
-        sync_state = self.get_sync_state()
+        """Check if a sync is currently in progress - ALWAYS reads from blob"""
+        # Always read fresh from blob to detect concurrent syncs
+        sync_state = self._read_sync_state_from_blob()
+        if sync_state is None:
+            sync_state = self._get_initial_sync_state()
+            
         is_in_progress = sync_state.get('sync_in_progress', False)
         sync_started_at = sync_state.get('sync_started_at')
         
@@ -256,18 +273,26 @@ class SyncBlobStorage:
         return is_in_progress
 
     def start_sync_lock(self):
-        """Start sync lock to prevent concurrent syncs"""
+        """Start sync lock to prevent concurrent syncs - ALWAYS writes to blob immediately"""
         from datetime import datetime
         sync_state = self.get_sync_state()
         sync_state['sync_in_progress'] = True
         sync_state['sync_started_at'] = datetime.now().isoformat() + 'Z'
         
+        # ALWAYS write sync lock to blob immediately, regardless of batch mode
+        was_batch_mode = self.batch_mode
+        self.batch_mode = False  # Temporarily disable batch mode
+        success = self.save_sync_state(sync_state)
+        self.batch_mode = was_batch_mode  # Restore batch mode state
+        
+        if success:
+            print("🔒 Sync lock acquired and written to blob")
+        else:
+            print("❌ Failed to acquire sync lock")
+            
+        # Also update cache if in batch mode
         if self.batch_mode:
             self.cached_sync_state = sync_state
-        else:
-            self.save_sync_state(sync_state)
-        
-        print("🔒 Sync lock acquired")
 
     def end_sync_lock(self):
         """Release sync lock"""
@@ -286,9 +311,17 @@ class SyncBlobStorage:
         """Get sync statistics"""
         sync_state = self.get_sync_state()
         
+        # Count total pages across all orders
+        total_pages = 0
+        synced_orders = sync_state.get('synced_orders', {})
+        for order_id in synced_orders:
+            page_ids = self.get_synced_order_page_ids(order_id)
+            total_pages += len(page_ids)
+        
         return {
             'last_sync': sync_state.get('last_sync'),
-            'total_synced_orders': len(sync_state.get('synced_orders', {})),
+            'total_synced_orders': len(synced_orders),
+            'total_notion_pages': total_pages,  # New metric
             'failed_orders_count': len(sync_state.get('failed_orders', [])),
             'failed_orders': sync_state.get('failed_orders', []),
             'last_processed_updated_at': sync_state.get('last_processed_updated_at'),
