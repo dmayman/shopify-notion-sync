@@ -46,9 +46,9 @@ class handler(BaseHTTPRequestHandler):
             except Exception as e:
                 print(f"📄 No existing file found or error reading: {e}")
             
-            # Write new timestamp
+            # Write new timestamp (allow overwrite for testing)
             print(f"💾 Writing new timestamp: {current_time}")
-            upload_result = vercel_blob.put(filename, current_time.encode('utf-8'))
+            upload_result = vercel_blob.put(filename, current_time.encode('utf-8'), options={'allowOverwrite': True})
             
             if upload_result and 'url' in upload_result:
                 new_url = upload_result['url']
