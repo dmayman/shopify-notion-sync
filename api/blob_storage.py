@@ -26,7 +26,9 @@ class SyncBlobStorage:
             "last_sync": None,
             "synced_orders": {},
             "failed_orders": [],
-            "last_processed_updated_at": None
+            "last_processed_updated_at": None,
+            "sync_in_progress": False,
+            "sync_started_at": None
         }
 
     def _read_sync_state_from_blob(self) -> Optional[Dict]:
@@ -234,6 +236,52 @@ class SyncBlobStorage:
         else:
             print(f"❌ Failed to update resume point")
 
+    def is_sync_in_progress(self) -> bool:
+        """Check if a sync is currently in progress"""
+        sync_state = self.get_sync_state()
+        is_in_progress = sync_state.get('sync_in_progress', False)
+        sync_started_at = sync_state.get('sync_started_at')
+        
+        # If sync has been running for more than 10 minutes, assume it's stuck
+        if is_in_progress and sync_started_at:
+            try:
+                from datetime import datetime, timedelta
+                started = datetime.fromisoformat(sync_started_at.replace('Z', '+00:00'))
+                if datetime.now(started.tzinfo) - started > timedelta(minutes=10):
+                    print("⚠️ Sync appears stuck (>10 minutes), allowing new sync")
+                    return False
+            except:
+                pass
+        
+        return is_in_progress
+
+    def start_sync_lock(self):
+        """Start sync lock to prevent concurrent syncs"""
+        from datetime import datetime
+        sync_state = self.get_sync_state()
+        sync_state['sync_in_progress'] = True
+        sync_state['sync_started_at'] = datetime.now().isoformat() + 'Z'
+        
+        if self.batch_mode:
+            self.cached_sync_state = sync_state
+        else:
+            self.save_sync_state(sync_state)
+        
+        print("🔒 Sync lock acquired")
+
+    def end_sync_lock(self):
+        """Release sync lock"""
+        sync_state = self.get_sync_state()
+        sync_state['sync_in_progress'] = False
+        sync_state['sync_started_at'] = None
+        
+        if self.batch_mode:
+            self.cached_sync_state = sync_state
+        else:
+            self.save_sync_state(sync_state)
+        
+        print("🔓 Sync lock released")
+
     def get_sync_statistics(self) -> Dict:
         """Get sync statistics"""
         sync_state = self.get_sync_state()
@@ -243,5 +291,7 @@ class SyncBlobStorage:
             'total_synced_orders': len(sync_state.get('synced_orders', {})),
             'failed_orders_count': len(sync_state.get('failed_orders', [])),
             'failed_orders': sync_state.get('failed_orders', []),
-            'last_processed_updated_at': sync_state.get('last_processed_updated_at')
+            'last_processed_updated_at': sync_state.get('last_processed_updated_at'),
+            'sync_in_progress': sync_state.get('sync_in_progress', False),
+            'sync_started_at': sync_state.get('sync_started_at')
         }
