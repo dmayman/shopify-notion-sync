@@ -65,7 +65,6 @@ class ShopifyNotionSync:
         payload = {'query': query}
         
         print(f"Making request to Shopify GraphQL API...")
-        print(f"🔍 GraphQL Query: {query[:200]}...")  # Show first 200 chars of query
         response = requests.post(url, json=payload, headers=headers)
         
         if response.status_code != 200:
@@ -90,7 +89,6 @@ class ShopifyNotionSync:
             # Normalize the date filter for Shopify GraphQL
             normalized_date_filter = self.normalize_shopify_timestamp(date_filter) 
             query_filter = f'query: "updated_at:>={normalized_date_filter}"'  # Apply date filter to the query
-            print(f"🔍 GraphQL query filter: {query_filter}")
         else:
             # Default behavior depends on context
             query_filter = ""
@@ -354,7 +352,21 @@ class ShopifyNotionSync:
         
         # Determine emoji for the page
         page_emoji = None
-        if is_multi_product:
+        if is_multi_product and parent_item:
+            # For line items, use category-based emojis
+            product_lower = product_name.lower()
+            if 'necklace' in product_lower:
+                page_emoji = 'necklace'
+            elif 'bracelet' in product_lower:
+                page_emoji = 'bracelet'
+            elif 'ring' in product_lower:
+                page_emoji = 'ring'
+            elif 'earring' in product_lower:
+                page_emoji = 'earring'
+            else:
+                page_emoji = 'gem_stone'  # Default for jewelry
+        elif is_multi_product:
+            # For parent pages of multi-product orders
             page_emoji = '🛍️'
         properties = {
             "Order ID": {
@@ -477,13 +489,45 @@ class ShopifyNotionSync:
             created_pages.append(parent_response)
 
             print(f"✅ Created parent page for order {transformed_data['order_id']}")
+            
+            # For multi-product orders, create individual line item pages
+            if transformed_data['is_multi_product']:
+                parent_page_id = parent_response['id']
+                print(f"🛍️ Creating {len(transformed_data['line_items'])} line item pages...")
+                
+                for i, line_item in enumerate(transformed_data['line_items'], 1):
+                    # Calculate individual tax and fee allocation (proportional)
+                    proportion = line_item['sold_for'] / transformed_data['total_sold'] if transformed_data['total_sold'] > 0 else 1/len(transformed_data['line_items'])
+                    allocated_tax = transformed_data['total_tax'] * proportion
+                    allocated_fee = transformed_data['total_fees'] * proportion
+                    
+                    line_properties, line_emoji = self.create_notion_properties(
+                        order_id=transformed_data['order_id'],
+                        product_name=line_item['product_name'],
+                        date=transformed_data['order_date'],
+                        customer_name=transformed_data['customer_name'],
+                        customer_email=transformed_data['customer_email'],
+                        listed_for=line_item['listed_for'],
+                        sold_for=line_item['sold_for'],
+                        tax=allocated_tax,
+                        fee=allocated_fee,
+                        sku=line_item['sku'],
+                        shopify_url=transformed_data['shopify_url'],
+                        payment_status=transformed_data['payment_status'],
+                        is_multi_product=True,
+                        parent_item=parent_page_id
+                    )
+                    
+                    line_response = self.create_notion_page_with_emoji(
+                        properties=line_properties,
+                        emoji_name=line_emoji
+                    )
+                    created_pages.append(line_response)
+                    
+                    print(f"  ✅ Created line item {i}/{len(transformed_data['line_items'])}: {line_item['product_name'][:30]}...")
 
             # Record success in sync storage with updatedAt timestamp
             order_updated_at = order['updatedAt']
-            
-            # Normalize timestamp format for Shopify GraphQL compatibility
-            # Shopify returns ISO format like "2023-11-11T06:55:52Z" which should work
-            print(f"🕐 Order {order_id} updatedAt: {order_updated_at}")
             self.sync_storage.mark_order_synced(order_id, parent_response['id'], order_updated_at)
 
             return created_pages
@@ -577,11 +621,8 @@ class ShopifyNotionSync:
                 # 2. Get orders updated since last sync or resume point
                 sync_from = sync_strategy.get('sync_from_timestamp')
                 if sync_from:
-                    # Normalize the timestamp for Shopify GraphQL
-                    normalized_timestamp = self.normalize_shopify_timestamp(sync_from)
                     print(f"📥 Fetching orders updated since {sync_from} (oldest to newest)")
-                    print(f"🔍 Normalized timestamp: {normalized_timestamp}")
-                    updated_data = self.get_shopify_orders(limit=limit, date_filter=normalized_timestamp, initial_sync=True)
+                    updated_data = self.get_shopify_orders(limit=limit, date_filter=sync_from, initial_sync=True)
                     updated_orders = updated_data['data']['orders']['edges']
                     
                     print(f"Found {len(updated_orders)} updated orders")

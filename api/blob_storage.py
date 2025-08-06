@@ -131,10 +131,6 @@ class SyncBlobStorage:
             json_content = json.dumps(sync_state, indent=2)
             print(f"💾 Writing sync state: {len(json_content)} chars")
             
-            # Add a small delay to avoid rapid write-read cycles
-            import time
-            time.sleep(0.1)
-            
             upload_result = vercel_blob.put(
                 self.sync_state_filename, 
                 json_content.encode('utf-8'),
@@ -143,9 +139,6 @@ class SyncBlobStorage:
             
             if upload_result and 'url' in upload_result:
                 print(f"✅ Sync state saved! URL: {upload_result['url']}")
-                
-                # Add another small delay after write to allow blob to settle
-                time.sleep(0.1)
                 return True
             else:
                 print(f"⚠️ Upload result: {upload_result}")
