@@ -4,6 +4,7 @@ import json
 import datetime
 import os
 import requests
+import time
 from notion_client import Client
 from .blob_storage import SyncBlobStorage
 
@@ -58,8 +59,8 @@ class ShopifyNotionSync:
         print(f"Successfully fetched data from Shopify")
         return data
 
-    def get_shopify_orders(self, limit=50, date_filter=None, order_ids=None):
-        """Get orders from Shopify with flexible filtering"""
+    def get_shopify_orders(self, limit=50, date_filter=None, order_ids=None, initial_sync=False):
+        """Get orders from Shopify with flexible filtering and proper sorting"""
         query_filter = ""
         
         if order_ids:
@@ -68,13 +69,25 @@ class ShopifyNotionSync:
         elif date_filter:
             query_filter = f'query: "updated_at:>={date_filter}"'  # Apply date filter to the query
         else:
-            # Default: get recent orders (no date filter)
+            # Default behavior depends on context
             query_filter = ""
-            print("Fetching recent orders (no date filter)")
+            if initial_sync:
+                print("Fetching orders for initial sync (from oldest to newest)")
+            else:
+                print("Fetching recent orders (no date filter)")
+        
+        # For initial sync: sort by UPDATED_AT ascending (oldest first)
+        # For incremental sync: sort by UPDATED_AT descending (newest first) 
+        if initial_sync:
+            sort_key = "UPDATED_AT"
+            reverse = "false"  # oldest first for initial sync
+        else:
+            sort_key = "UPDATED_AT" 
+            reverse = "true"   # newest first for incremental sync
         
         query = f"""
         query {{
-            orders(first: {limit}, sortKey: CREATED_AT, reverse: true, {query_filter}) {{
+            orders(first: {limit}, sortKey: {sort_key}, reverse: {reverse}, {query_filter}) {{
                 edges {{
                     node {{
                         id
@@ -139,15 +152,17 @@ class ShopifyNotionSync:
         return self.fetch_shopify_data(query)
 
     def determine_sync_strategy(self):
-        """Ultra-minimal sync strategy determination"""
+        """Enhanced sync strategy with resume capability"""
         last_sync = self.sync_storage.get_last_sync()
         failed_orders = self.sync_storage.get_failed_orders()
+        resume_timestamp = self.sync_storage.get_resume_timestamp()
         
         strategy = {
             'sync_type': 'smart',
             'actions': [],
             'needs_initial': last_sync is None,
-            'has_failed_orders': len(failed_orders) > 0
+            'has_failed_orders': len(failed_orders) > 0,
+            'resume_timestamp': resume_timestamp
         }
         
         if last_sync is None:
@@ -156,7 +171,11 @@ class ShopifyNotionSync:
         else:
             if failed_orders:
                 strategy['actions'].append(f'Retry {len(failed_orders)} failed orders')
-            strategy['actions'].append(f'Sync orders updated since {last_sync}')
+            
+            # Use resume timestamp if available, otherwise use last_sync
+            sync_from = resume_timestamp if resume_timestamp else last_sync
+            strategy['actions'].append(f'Sync orders updated since {sync_from}')
+            strategy['sync_from_timestamp'] = sync_from
         
         if not strategy['actions']:
             strategy['actions'].append('All orders are up to date')
@@ -376,7 +395,7 @@ class ShopifyNotionSync:
                 print(f"⚠️  Failed to archive page {page_id}: {e}")
 
     def create_notion_page_with_emoji(self, properties, emoji_name=None):
-        """Create Notion page with custom emoji if provided"""
+        """Create Notion page with custom emoji if provided, includes rate limiting"""
         page_data = {
             "parent": {"database_id": self.notion_database_id},
             "properties": properties
@@ -388,6 +407,9 @@ class ShopifyNotionSync:
                 "type": "emoji",
                 "emoji": f":{emoji_name}:"
             }
+        
+        # Rate limiting: 0.4s delay to stay under 150 requests/minute
+        time.sleep(0.4)
         
         return self.notion.pages.create(**page_data)
 
@@ -433,8 +455,9 @@ class ShopifyNotionSync:
 
             print(f"✅ Created parent page for order {transformed_data['order_id']}")
 
-            # Record success in sync storage
-            self.sync_storage.mark_order_synced(order_id, parent_response['id'])
+            # Record success in sync storage with updatedAt timestamp
+            order_updated_at = order['updatedAt']
+            self.sync_storage.mark_order_synced(order_id, parent_response['id'], order_updated_at)
 
             return created_pages
 
@@ -468,28 +491,39 @@ class ShopifyNotionSync:
             errors = []
             
             if sync_strategy['sync_type'] == 'initial' or sync_strategy['needs_initial']:
-                # Initial sync: get all recent orders
+                # Initial sync: get orders from oldest to newest (no date filter = from the very beginning)
                 print(f"🚀 Starting initial sync (limit: {limit})")
-                orders_data = self.get_shopify_orders(limit=limit)
+                print(f"   📊 Processing from VERY FIRST ORDER chronologically (oldest updatedAt first)")
+                orders_data = self.get_shopify_orders(limit=limit, initial_sync=True)
                 orders = orders_data['data']['orders']['edges']
                 
                 print(f"Found {len(orders)} orders for initial sync")
                 
+                # Show first and last order timestamps to verify chronological order
+                if orders:
+                    first_order = orders[0]['node']
+                    last_order = orders[-1]['node']
+                    print(f"   📅 First order: {first_order['name']} (updatedAt: {first_order['updatedAt']})")
+                    print(f"   📅 Last order: {last_order['name']} (updatedAt: {last_order['updatedAt']})")
+                
                 # Process each order
-                for order_data in orders:
+                for i, order_data in enumerate(orders, 1):
                     result = self.create_notion_page(order_data)
                     if result:
                         processed_orders += 1
                         created_pages_count += len(result)
                     else:
                         errors.append(order_data['node']['name'])
+                    
+                    # Progress logging every 10 orders
+                    if i % 10 == 0:
+                        print(f"📊 Progress: {i}/{len(orders)} orders processed ({processed_orders} successful, {len(errors)} errors)")
             
             else:
                 # Smart sync: handle failed orders and updated orders
                 print(f"🧠 Starting smart sync")
                 
-                # Get last sync timestamp
-                last_sync = self.sync_storage.get_last_sync()
+                # Note: sync timestamp is handled via sync_strategy
                 
                 # 1. Retry failed orders first
                 failed_order_ids = self.sync_storage.get_failed_orders()
@@ -497,30 +531,40 @@ class ShopifyNotionSync:
                     print(f"🔄 Retrying {len(failed_order_ids)} failed orders")
                     if failed_order_ids:
                         retry_data = self.get_shopify_orders(order_ids=failed_order_ids)
-                        for order_data in retry_data['data']['orders']['edges']:
+                        retry_orders = retry_data['data']['orders']['edges']
+                        for i, order_data in enumerate(retry_orders, 1):
                             result = self.create_notion_page(order_data)
                             if result:
                                 processed_orders += 1
                                 created_pages_count += len(result)
                             else:
                                 errors.append(order_data['node']['name'])
+                            
+                            # Progress logging every 5 failed orders (smaller batches)
+                            if i % 5 == 0:
+                                print(f"🔄 Retry Progress: {i}/{len(retry_orders)} failed orders processed")
                 
-                # 2. Get orders updated since last sync
-                if last_sync:
-                    date_filter = f"updated_at:>={last_sync}"
-                    print(f"📥 Fetching orders updated since {last_sync}")
-                    updated_data = self.get_shopify_orders(limit=limit, date_filter=date_filter)
+                # 2. Get orders updated since last sync or resume point
+                sync_from = sync_strategy.get('sync_from_timestamp')
+                if sync_from:
+                    date_filter = f"updated_at:>={sync_from}"
+                    print(f"📥 Fetching orders updated since {sync_from} (oldest to newest)")
+                    updated_data = self.get_shopify_orders(limit=limit, date_filter=date_filter, initial_sync=True)
                     updated_orders = updated_data['data']['orders']['edges']
                     
                     print(f"Found {len(updated_orders)} updated orders")
                     
-                    for order_data in updated_orders:
+                    for i, order_data in enumerate(updated_orders, 1):
                         result = self.create_notion_page(order_data)
                         if result:
                             processed_orders += 1
                             created_pages_count += len(result)
                         else:
                             errors.append(order_data['node']['name'])
+                        
+                        # Progress logging every 10 orders
+                        if i % 10 == 0:
+                            print(f"📊 Updated Orders Progress: {i}/{len(updated_orders)} orders processed ({processed_orders} total successful)")
             
             # Mark sync as completed
             self.sync_storage.complete_sync()
