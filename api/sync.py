@@ -5,6 +5,7 @@ import datetime
 import os
 import requests
 import time
+from datetime import datetime as dt
 from notion_client import Client
 from .blob_storage import SyncBlobStorage
 
@@ -33,6 +34,24 @@ class ShopifyNotionSync:
         
         print(f"Initialized sync for store: {self.shopify_store_url}")
         print(f"Notion database ID: {self.notion_database_id}")
+    
+    def normalize_shopify_timestamp(self, timestamp_str):
+        """Normalize timestamp for Shopify GraphQL query compatibility"""
+        try:
+            # Parse the timestamp string
+            if timestamp_str.endswith('Z'):
+                # Already in correct UTC format
+                return timestamp_str
+            elif '+' in timestamp_str or timestamp_str.endswith('+00:00'):
+                # Convert to UTC Z format
+                parsed = dt.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                return parsed.strftime('%Y-%m-%dT%H:%M:%SZ')
+            else:
+                # Assume UTC and add Z
+                return timestamp_str + 'Z' if not timestamp_str.endswith('Z') else timestamp_str
+        except Exception as e:
+            print(f"⚠️ Timestamp normalization error: {e}, using original: {timestamp_str}")
+            return timestamp_str
 
     def fetch_shopify_data(self, query):
         """Fetch data from Shopify using GraphQL"""
@@ -46,6 +65,7 @@ class ShopifyNotionSync:
         payload = {'query': query}
         
         print(f"Making request to Shopify GraphQL API...")
+        print(f"🔍 GraphQL Query: {query[:200]}...")  # Show first 200 chars of query
         response = requests.post(url, json=payload, headers=headers)
         
         if response.status_code != 200:
@@ -67,7 +87,10 @@ class ShopifyNotionSync:
             order_filter = " OR ".join([f"name:{oid}" for oid in order_ids])
             query_filter = f'query: "{order_filter}"'
         elif date_filter:
-            query_filter = f'query: "updated_at:>={date_filter}"'  # Apply date filter to the query
+            # Normalize the date filter for Shopify GraphQL
+            normalized_date_filter = self.normalize_shopify_timestamp(date_filter) 
+            query_filter = f'query: "updated_at:>={normalized_date_filter}"'  # Apply date filter to the query
+            print(f"🔍 GraphQL query filter: {query_filter}")
         else:
             # Default behavior depends on context
             query_filter = ""
@@ -457,6 +480,10 @@ class ShopifyNotionSync:
 
             # Record success in sync storage with updatedAt timestamp
             order_updated_at = order['updatedAt']
+            
+            # Normalize timestamp format for Shopify GraphQL compatibility
+            # Shopify returns ISO format like "2023-11-11T06:55:52Z" which should work
+            print(f"🕐 Order {order_id} updatedAt: {order_updated_at}")
             self.sync_storage.mark_order_synced(order_id, parent_response['id'], order_updated_at)
 
             return created_pages
@@ -550,9 +577,11 @@ class ShopifyNotionSync:
                 # 2. Get orders updated since last sync or resume point
                 sync_from = sync_strategy.get('sync_from_timestamp')
                 if sync_from:
-                    date_filter = f"updated_at:>={sync_from}"
+                    # Normalize the timestamp for Shopify GraphQL
+                    normalized_timestamp = self.normalize_shopify_timestamp(sync_from)
                     print(f"📥 Fetching orders updated since {sync_from} (oldest to newest)")
-                    updated_data = self.get_shopify_orders(limit=limit, date_filter=date_filter, initial_sync=True)
+                    print(f"🔍 Normalized timestamp: {normalized_timestamp}")
+                    updated_data = self.get_shopify_orders(limit=limit, date_filter=normalized_timestamp, initial_sync=True)
                     updated_orders = updated_data['data']['orders']['edges']
                     
                     print(f"Found {len(updated_orders)} updated orders")
