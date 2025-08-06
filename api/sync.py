@@ -350,24 +350,8 @@ class ShopifyNotionSync:
         net_earning = sold_for - fee
         to_payouts = sold_for + tax - fee
         
-        # Determine emoji for the page
+        # No custom emoji - keep it simple
         page_emoji = None
-        if is_multi_product and parent_item:
-            # For line items, use category-based emojis
-            product_lower = product_name.lower()
-            if 'necklace' in product_lower:
-                page_emoji = 'necklace'
-            elif 'bracelet' in product_lower:
-                page_emoji = 'bracelet'
-            elif 'ring' in product_lower:
-                page_emoji = 'ring'
-            elif 'earring' in product_lower:
-                page_emoji = 'earring'
-            else:
-                page_emoji = 'gem_stone'  # Default for jewelry
-        elif is_multi_product:
-            # For parent pages of multi-product orders
-            page_emoji = '🛍️'
         properties = {
             "Order ID": {
                 "title": [{"text": {"content": order_id}}]
@@ -429,19 +413,12 @@ class ShopifyNotionSync:
             except Exception as e:
                 print(f"⚠️  Failed to archive page {page_id}: {e}")
 
-    def create_notion_page_with_emoji(self, properties, emoji_name=None):
-        """Create Notion page with custom emoji if provided, includes rate limiting"""
+    def create_notion_page_with_emoji(self, properties):
+        """Create Notion page with rate limiting"""
         page_data = {
             "parent": {"database_id": self.notion_database_id},
             "properties": properties
         }
-        
-        # Add custom emoji if provided
-        if emoji_name:
-            page_data["icon"] = {
-                "type": "emoji",
-                "emoji": f":{emoji_name}:"
-            }
         
         # Rate limiting: 0.4s delay to stay under 150 requests/minute
         time.sleep(0.4)
@@ -467,7 +444,7 @@ class ShopifyNotionSync:
 
             # Create parent page
             product_name = f"{len(transformed_data['line_items'])} products" if transformed_data['is_multi_product'] else transformed_data['line_items'][0]['product_name']
-            properties, page_emoji = self.create_notion_properties(
+            properties, _ = self.create_notion_properties(
                 order_id=transformed_data['order_id'],
                 product_name=product_name,
                 date=transformed_data['order_date'],
@@ -483,8 +460,7 @@ class ShopifyNotionSync:
             )
 
             parent_response = self.create_notion_page_with_emoji(
-                properties=properties,
-                emoji_name=page_emoji
+                properties=properties
             )
             created_pages.append(parent_response)
 
@@ -501,7 +477,7 @@ class ShopifyNotionSync:
                     allocated_tax = transformed_data['total_tax'] * proportion
                     allocated_fee = transformed_data['total_fees'] * proportion
                     
-                    line_properties, line_emoji = self.create_notion_properties(
+                    line_properties, _ = self.create_notion_properties(
                         order_id=transformed_data['order_id'],
                         product_name=line_item['product_name'],
                         date=transformed_data['order_date'],
@@ -519,8 +495,7 @@ class ShopifyNotionSync:
                     )
                     
                     line_response = self.create_notion_page_with_emoji(
-                        properties=line_properties,
-                        emoji_name=line_emoji
+                        properties=line_properties
                     )
                     created_pages.append(line_response)
                     
