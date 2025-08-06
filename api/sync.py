@@ -473,8 +473,11 @@ class ShopifyNotionSync:
             return None
 
     def sync_orders_to_notion(self, mode='smart', limit=50):
-        """Ultra-minimal sync function using Shopify's updatedAt field"""
+        """Ultra-minimal sync function using Shopify's updatedAt field - batch blob writes"""
         try:
+            # Start batch mode to defer blob writes until the end
+            self.sync_storage.start_batch_mode()
+            
             # Determine sync strategy
             if mode == 'initial':
                 sync_strategy = {'sync_type': 'initial', 'actions': ['Initial sync requested']}
@@ -569,6 +572,11 @@ class ShopifyNotionSync:
             # Mark sync as completed
             self.sync_storage.complete_sync()
             
+            # End batch mode and write all changes to blob
+            blob_success = self.sync_storage.end_batch_mode()
+            if not blob_success:
+                print("⚠️ Warning: Failed to save sync state to blob storage")
+            
             # Return summary
             summary = {
                 "status": "success",
@@ -587,6 +595,12 @@ class ShopifyNotionSync:
             return summary
             
         except Exception as e:
+            # Make sure to end batch mode even if sync fails
+            try:
+                self.sync_storage.end_batch_mode()
+            except:
+                pass  # Don't let batch mode cleanup failure mask the original error
+                
             error_summary = {
                 "status": "error",
                 "message": str(e),

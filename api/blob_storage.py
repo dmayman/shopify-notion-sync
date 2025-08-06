@@ -17,6 +17,8 @@ class SyncBlobStorage:
             raise ValueError("BLOB_READ_WRITE_TOKEN environment variable is required")
         
         self.sync_state_filename = "sync-state.json"
+        self.batch_mode = False
+        self.cached_sync_state = None
 
     def _get_initial_sync_state(self) -> Dict:
         """Get initial sync state structure"""
@@ -79,8 +81,31 @@ class SyncBlobStorage:
             print(f"📄 Error reading sync state: {e}")
             return None
 
+    def start_batch_mode(self):
+        """Start batch mode - cache state in memory and defer writes"""
+        if not self.batch_mode:  # Only read if not already in batch mode
+            self.cached_sync_state = self._read_sync_state_from_blob()
+            if self.cached_sync_state is None:
+                print("📄 Using initial sync state for batch mode")
+                self.cached_sync_state = self._get_initial_sync_state()
+        self.batch_mode = True
+        print("🔄 Started batch mode - deferring blob writes")
+
+    def end_batch_mode(self):
+        """End batch mode and write accumulated changes to blob"""
+        if self.batch_mode and self.cached_sync_state:
+            print("💾 Ending batch mode - writing all changes to blob")
+            success = self.save_sync_state(self.cached_sync_state)
+            self.batch_mode = False
+            self.cached_sync_state = None
+            return success
+        return True
+
     def get_sync_state(self) -> Dict:
-        """Get current sync state from blob storage"""
+        """Get current sync state from blob storage or cache"""
+        if self.batch_mode and self.cached_sync_state:
+            return self.cached_sync_state
+            
         sync_state = self._read_sync_state_from_blob()
         if sync_state is None:
             print("📄 Using initial sync state")
@@ -89,6 +114,12 @@ class SyncBlobStorage:
 
     def save_sync_state(self, sync_state: Dict) -> bool:
         """Save sync state to blob storage using test_blob.py patterns"""
+        if self.batch_mode:
+            # In batch mode, just update the cached state
+            self.cached_sync_state = sync_state
+            print("🔄 Updated cached sync state (batch mode)")
+            return True
+            
         try:
             json_content = json.dumps(sync_state, indent=2)
             print(f"💾 Writing sync state: {len(json_content)} chars")
