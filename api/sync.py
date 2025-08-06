@@ -472,21 +472,19 @@ class ShopifyNotionSync:
                 print(f"🛍️ Creating {len(transformed_data['line_items'])} line item pages...")
                 
                 for i, line_item in enumerate(transformed_data['line_items'], 1):
-                    # Calculate individual tax and fee allocation (proportional)
-                    proportion = line_item['sold_for'] / transformed_data['total_sold'] if transformed_data['total_sold'] > 0 else 1/len(transformed_data['line_items'])
-                    allocated_tax = transformed_data['total_tax'] * proportion
-                    allocated_fee = transformed_data['total_fees'] * proportion
+                    # Create line item order ID with suffix (e.g., #1234.1, #1234.2)
+                    line_item_order_id = f"{transformed_data['order_id']}.{i}"
                     
                     line_properties, _ = self.create_notion_properties(
-                        order_id=transformed_data['order_id'],
+                        order_id=line_item_order_id,
                         product_name=line_item['product_name'],
                         date=transformed_data['order_date'],
-                        customer_name=transformed_data['customer_name'],
-                        customer_email=transformed_data['customer_email'],
+                        customer_name="",  # Blank for line items
+                        customer_email="",  # Blank for line items
                         listed_for=line_item['listed_for'],
                         sold_for=line_item['sold_for'],
-                        tax=allocated_tax,
-                        fee=allocated_fee,
+                        tax=0,  # Blank for line items
+                        fee=0,  # Blank for line items
                         sku=line_item['sku'],
                         shopify_url=transformed_data['shopify_url'],
                         payment_status=transformed_data['payment_status'],
