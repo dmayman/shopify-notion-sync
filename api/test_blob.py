@@ -2,8 +2,9 @@
 from http.server import BaseHTTPRequestHandler
 import json
 import os
+import requests
 from datetime import datetime
-from vercel_blob import put, get
+import vercel_blob
 
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -21,30 +22,40 @@ class handler(BaseHTTPRequestHandler):
             
             # Try to read existing file first
             existing_data = None
+            existing_url = None
+            
             try:
-                # Check if we have a stored URL from previous runs
-                existing_url = os.getenv('TEST_BLOB_URL')
+                # List existing blobs to find our test file
+                print("📋 Listing existing blobs...")
+                blobs_response = vercel_blob.list()
+                
+                if 'blobs' in blobs_response:
+                    for blob in blobs_response['blobs']:
+                        if blob.get('pathname') == filename:
+                            existing_url = blob.get('url') or blob.get('downloadUrl')
+                            print(f"📖 Found existing file: {existing_url}")
+                            break
+                
                 if existing_url:
-                    print(f"📖 Trying to read existing file from: {existing_url}")
-                    result = get(url=existing_url)
-                    if result and result.body:
-                        existing_data = result.body.read().decode('utf-8')
-                        print(f"📄 Found existing data: {existing_data}")
+                    # Download the existing file content
+                    response = requests.get(existing_url)
+                    response.raise_for_status()
+                    existing_data = response.text
+                    print(f"📄 Found existing data: {existing_data}")
+                    
             except Exception as e:
                 print(f"📄 No existing file found or error reading: {e}")
             
             # Write new timestamp
             print(f"💾 Writing new timestamp: {current_time}")
-            upload_result = put(filename, current_time, token=blob_token)
+            upload_result = vercel_blob.put(filename, current_time.encode('utf-8'))
             
-            if hasattr(upload_result, 'url'):
-                new_url = upload_result.url
+            if upload_result and 'url' in upload_result:
+                new_url = upload_result['url']
                 print(f"✅ Upload successful! New URL: {new_url}")
-                
-                # Store the URL for next time (in a real app, you'd persist this properly)
-                os.environ['TEST_BLOB_URL'] = new_url
             else:
                 new_url = "No URL returned"
+                print(f"Upload result: {upload_result}")
             
             # Send response
             self.send_response(200)
