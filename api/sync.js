@@ -856,7 +856,7 @@ export default async function handler(req, res) {
   // Set CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-API-Key');
 
   const now = new Date().toISOString();
   console.log(`[${now}] ${req.method} request received`);
@@ -868,6 +868,29 @@ export default async function handler(req, res) {
   }
 
   try {
+    // Check for API key authentication
+    const apiKey = req.headers['x-api-key'] || req.query.api_key;
+    const expectedApiKey = process.env.SYNC_API_KEY;
+    
+    if (!expectedApiKey) {
+      console.error('SYNC_API_KEY not configured');
+      return res.status(500).json({
+        status: 'error',
+        message: 'Server configuration error',
+        timestamp: now
+      });
+    }
+    
+    if (!apiKey || apiKey !== expectedApiKey) {
+      console.warn(`Unauthorized sync attempt from ${req.headers['x-forwarded-for'] || req.connection?.remoteAddress}`);
+      return res.status(401).json({
+        status: 'error',
+        message: 'Unauthorized - Invalid or missing API key',
+        timestamp: now
+      });
+    }
+
+
     const sync = new ShopifyNotionSync();
 
     if (req.method === 'GET') {
