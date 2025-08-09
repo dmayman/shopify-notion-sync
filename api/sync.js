@@ -572,7 +572,7 @@ class ShopifyNotionSync {
     }
   }
 
-  async syncOrdersToNotion(mode = 'smart', limit = 50) {
+  async syncOrdersToNotion(mode = 'smart', limit = 50, specificOrderId = null) {
     try {
       // Check if another sync is already in progress
       console.log('🔍 Checking if sync is already in progress...');
@@ -592,6 +592,8 @@ class ShopifyNotionSync {
       let syncStrategy;
       if (mode === 'initial') {
         syncStrategy = { sync_type: 'initial', actions: ['Initial sync requested'] };
+      } else if (mode === 'single') {
+        syncStrategy = { sync_type: 'single', actions: [`Single order sync for ${specificOrderId}`] };
       } else {
         syncStrategy = await this.determineSyncStrategy();
       }
@@ -768,6 +770,34 @@ class ShopifyNotionSync {
             console.log(`📍 Updated resume point to highest order updatedAt: ${highestUpdatedAt}`);
           }
         }
+      } else if (syncStrategy.sync_type === 'single') {
+        // Single order sync: get one specific order by ID
+        console.log(`🎯 Starting single order sync for ${specificOrderId}`);
+        
+        // Remove # prefix if present (support both "1234" and "#1234")
+        const cleanOrderId = specificOrderId.startsWith('#') ? specificOrderId.substring(1) : specificOrderId;
+        
+        const orderData = await this.getShopifyOrders(1, null, [cleanOrderId]);
+        const orders = orderData.data.orders.edges;
+
+        if (orders.length === 0) {
+          console.log(`❌ Order ${specificOrderId} not found in Shopify`);
+          errors.push(`Order ${specificOrderId} not found`);
+        } else {
+          const orderToSync = orders[0];
+          const orderId = orderToSync.node.name;
+          console.log(`📦 Found order ${orderId}, processing...`);
+          
+          const result = await this.createNotionPage(orderToSync);
+          if (result) {
+            processedOrders++;
+            createdPagesCount += result.length;
+            console.log(`✅ Successfully synced order ${orderId} (${result.length} pages created)`);
+          } else {
+            errors.push(orderId);
+            console.log(`❌ Failed to sync order ${orderId}`);
+          }
+        }
       }
 
       // Mark sync as completed
@@ -872,14 +902,6 @@ export default async function handler(req, res) {
     const apiKey = req.headers['x-api-key'] || req.query.api_key;
     const expectedApiKey = process.env.SYNC_API_KEY?.trim();
     
-    // Debug logging (remove after testing)
-    console.log(`Received API key: ${apiKey ? 'present' : 'missing'}`);
-    console.log(`Expected API key: ${expectedApiKey ? 'configured' : 'not configured'}`);
-    console.log(`Keys match: ${apiKey === expectedApiKey}`);
-    console.log(`Received key length: ${apiKey?.length || 0}`);
-    console.log(`Expected key length: ${expectedApiKey?.length || 0}`);
-    console.log(`Received key starts with: ${apiKey?.substring(0, 20)}...`);
-    console.log(`Expected key starts with: ${expectedApiKey?.substring(0, 20)}...`);
     
     if (!expectedApiKey) {
       console.error('SYNC_API_KEY not configured');
@@ -944,18 +966,27 @@ export default async function handler(req, res) {
       console.log(`[${now}] POST request received - Starting sync`);
 
       // Get sync parameters from query and body
-      const syncMode = req.query.mode || 'smart'; // 'initial' or 'smart'
+      const syncMode = req.query.mode || 'smart'; // 'initial', 'smart', or 'single'
       const syncLimit = parseInt(req.query.limit || req.body?.limit || 50);
+      const orderId = req.query.order_id;
 
-      // Validate limit range (1-1000)
-      if (syncLimit < 1 || syncLimit > 1000) {
+      // Validate parameters
+      if (syncMode === 'single' && !orderId) {
+        throw new Error('order_id is required for single order sync mode');
+      }
+      
+      if (syncMode !== 'single' && syncLimit < 1 || syncLimit > 1000) {
         throw new Error(`Limit must be between 1 and 1000, got: ${syncLimit}`);
       }
 
-      console.log(`Sync mode: ${syncMode}, limit: ${syncLimit}`);
+      if (syncMode === 'single') {
+        console.log(`Sync mode: ${syncMode}, order_id: ${orderId}`);
+      } else {
+        console.log(`Sync mode: ${syncMode}, limit: ${syncLimit}`);
+      }
 
       // Perform the sync
-      const syncResults = await sync.syncOrdersToNotion(syncMode, syncLimit);
+      const syncResults = await sync.syncOrdersToNotion(syncMode, syncLimit, orderId);
 
       // Send response
       const response = {
