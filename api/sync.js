@@ -478,7 +478,7 @@ class ShopifyNotionSync {
     return this.notion.pages.create(pageData);
   }
 
-  async createNotionPage(orderData) {
+  async createNotionPage(orderData, updateResumePoint = true) {
     try {
       const order = orderData.node;
       const transformedData = this.transformOrderData(order);
@@ -557,7 +557,7 @@ class ShopifyNotionSync {
       // Record success in sync storage with all page IDs and updatedAt timestamp
       const orderUpdatedAt = order.updatedAt;
       const allPageIds = createdPages.map(page => page.id);
-      await this.syncStorage.markOrderSynced(orderId, allPageIds, orderUpdatedAt);
+      await this.syncStorage.markOrderSynced(orderId, allPageIds, updateResumePoint ? orderUpdatedAt : null);
 
       return createdPages;
 
@@ -585,8 +585,10 @@ class ShopifyNotionSync {
         };
       }
 
-      // Start sync lock
-      await this.syncStorage.startSyncLock();
+      // Start sync lock (except for single mode which doesn't need locking)
+      if (mode !== 'single') {
+        await this.syncStorage.startSyncLock();
+      }
 
       // Determine sync strategy
       let syncStrategy;
@@ -790,11 +792,11 @@ class ShopifyNotionSync {
           const orderId = orderToSync.node.name;
           console.log(`📦 Found order ${orderId}, processing...`);
           
-          const result = await this.createNotionPage(orderToSync);
+          const result = await this.createNotionPage(orderToSync, false); // Don't update resume point for single sync
           if (result) {
             processedOrders++;
             createdPagesCount += result.length;
-            console.log(`✅ Successfully synced order ${orderId} (${result.length} pages created)`);
+            console.log(`✅ Successfully synced order ${orderId} (${result.length} pages created) - No sync state updated`);
           } else {
             errors.push(orderId);
             console.log(`❌ Failed to sync order ${orderId}`);
@@ -802,11 +804,15 @@ class ShopifyNotionSync {
         }
       }
 
-      // Mark sync as completed
-      await this.syncStorage.completeSync();
+      // Mark sync as completed (except for single mode which shouldn't affect sync state)
+      if (syncStrategy.sync_type !== 'single') {
+        await this.syncStorage.completeSync();
+      }
 
-      // Release sync lock
-      await this.syncStorage.endSyncLock();
+      // Release sync lock (only if we acquired it)
+      if (syncStrategy.sync_type !== 'single') {
+        await this.syncStorage.endSyncLock();
+      }
 
       // Return summary
       const summary = {
