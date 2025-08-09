@@ -770,7 +770,9 @@ class ShopifyNotionSync {
             console.log(`📍 Updated resume point to highest order updatedAt: ${highestUpdatedAt}`);
           }
         }
-      } else if (syncStrategy.sync_type === 'single') {
+      }
+      
+      if (syncStrategy.sync_type === 'single') {
         // Single order sync: get one specific order by ID
         console.log(`🎯 Starting single order sync for ${specificOrderId}`);
         
@@ -903,22 +905,19 @@ export default async function handler(req, res) {
     const expectedApiKey = process.env.SYNC_API_KEY?.trim();
     
     
-    if (!expectedApiKey) {
-      console.error('SYNC_API_KEY not configured');
-      return res.status(500).json({
-        status: 'error',
-        message: 'Server configuration error',
-        timestamp: now
-      });
-    }
-    
-    if (!apiKey || apiKey !== expectedApiKey) {
-      console.warn(`Unauthorized sync attempt from ${req.headers['x-forwarded-for'] || req.connection?.remoteAddress}`);
-      return res.status(401).json({
-        status: 'error',
-        message: 'Unauthorized - Invalid or missing API key',
-        timestamp: now
-      });
+    // Only require API key if it's configured (i.e., in production)
+    if (expectedApiKey) {
+      if (!apiKey || apiKey !== expectedApiKey) {
+        console.warn(`Unauthorized sync attempt from ${req.headers['x-forwarded-for'] || req.connection?.remoteAddress}`);
+        return res.status(401).json({
+          status: 'error',
+          message: 'Unauthorized - Invalid or missing API key',
+          timestamp: now
+        });
+      }
+      console.log('✅ API key authenticated');
+    } else {
+      console.log('🔓 Development mode - API key not required');
     }
 
 
@@ -975,7 +974,7 @@ export default async function handler(req, res) {
         throw new Error('order_id is required for single order sync mode');
       }
       
-      if (syncMode !== 'single' && syncLimit < 1 || syncLimit > 1000) {
+      if (syncMode !== 'single' && (syncLimit < 1 || syncLimit > 1000)) {
         throw new Error(`Limit must be between 1 and 1000, got: ${syncLimit}`);
       }
 
