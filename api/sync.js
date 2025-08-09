@@ -876,6 +876,10 @@ export default async function handler(req, res) {
     console.log(`Received API key: ${apiKey ? 'present' : 'missing'}`);
     console.log(`Expected API key: ${expectedApiKey ? 'configured' : 'not configured'}`);
     console.log(`Keys match: ${apiKey === expectedApiKey}`);
+    console.log(`Received key length: ${apiKey?.length || 0}`);
+    console.log(`Expected key length: ${expectedApiKey?.length || 0}`);
+    console.log(`Received key starts with: ${apiKey?.substring(0, 20)}...`);
+    console.log(`Expected key starts with: ${expectedApiKey?.substring(0, 20)}...`);
     
     if (!expectedApiKey) {
       console.error('SYNC_API_KEY not configured');
