@@ -870,7 +870,7 @@ export default async function handler(req, res) {
   try {
     // Check for API key authentication
     const apiKey = req.headers['x-api-key'] || req.query.api_key;
-    const expectedApiKey = process.env.SYNC_API_KEY;
+    const expectedApiKey = process.env.SYNC_API_KEY?.trim();
     
     // Debug logging (remove after testing)
     console.log(`Received API key: ${apiKey ? 'present' : 'missing'}`);
