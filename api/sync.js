@@ -872,6 +872,11 @@ export default async function handler(req, res) {
     const apiKey = req.headers['x-api-key'] || req.query.api_key;
     const expectedApiKey = process.env.SYNC_API_KEY;
     
+    // Debug logging (remove after testing)
+    console.log(`Received API key: ${apiKey ? 'present' : 'missing'}`);
+    console.log(`Expected API key: ${expectedApiKey ? 'configured' : 'not configured'}`);
+    console.log(`Keys match: ${apiKey === expectedApiKey}`);
+    
     if (!expectedApiKey) {
       console.error('SYNC_API_KEY not configured');
       return res.status(500).json({
