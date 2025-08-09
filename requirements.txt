@@ -1,3 +1,4 @@
 requests==2.32.3
 notion-client==2.2.1
 vercel-blob==0.4.2
+pg8000==1.30.5

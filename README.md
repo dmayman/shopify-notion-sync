@@ -10,7 +10,7 @@ A serverless function that synchronizes order data from Shopify to a Notion data
 - ✅ **Multi-Product Orders**: Handles single and multi-product orders with proper relationships
 - ✅ **Error Tracking**: Tracks failed orders for retry logic
 - ✅ **Progress Logging**: Detailed logging every 10 orders processed
-- ✅ **Blob Storage**: Uses Vercel Blob for persistent sync state management
+- ✅ **Database Storage**: Uses Neon PostgreSQL for reliable sync state management
 
 ## API Endpoints
 
@@ -69,6 +69,8 @@ GET /api/sync?endpoint=status
 
 #### **POST** - Execute Sync
 
+All sync operations support a `limit` parameter (1-1000, default: 50) that can be specified either in the URL query parameters or request body. URL parameters take precedence over request body values.
+
 **Basic Sync** (Default: 50 orders)
 ```bash
 POST /api/sync
@@ -77,7 +79,7 @@ Content-Type: application/json
 {}
 ```
 
-**Custom Batch Size**
+**Custom Batch Size** (via request body)
 ```bash
 POST /api/sync
 Content-Type: application/json
@@ -85,12 +87,29 @@ Content-Type: application/json
 {"limit": 100}
 ```
 
-**Force Initial Sync**
+**Custom Batch Size** (via URL parameter)
 ```bash
-POST /api/sync?mode=initial
+POST /api/sync?limit=100
+Content-Type: application/json
+
+{}
+```
+
+**Force Initial Sync** (with custom limit)
+```bash
+POST /api/sync?mode=initial&limit=25
+Content-Type: application/json
+
+{}
+```
+
+**Combined Parameters** (URL params take precedence over request body)
+```bash
+POST /api/sync?mode=initial&limit=75
 Content-Type: application/json
 
 {"limit": 50}
+# Final limit will be 75 (from URL param)
 ```
 
 **Response:**
@@ -122,25 +141,41 @@ Content-Type: application/json
 
 Handles cross-origin requests for browser compatibility.
 
-### `/api/test_blob`
+### `/api/test_db`
 
-Testing endpoint for Vercel Blob storage functionality.
+Testing endpoint for Neon database connection and sync storage functionality.
 
-#### **GET** - Test Blob Operations
+#### **GET** - Test Database Operations
 
 ```bash
-GET /api/test_blob
+GET /api/test_db
 ```
 
 **Response:**
 ```json
 {
   "status": "success",
-  "message": "Vercel Blob test completed",
-  "previous_timestamp": "2025-08-06T10:15:00.000Z",
-  "new_timestamp": "2025-08-06T10:30:00.000Z",
-  "blob_url": "https://blob.vercel-storage.com/test-timestamp.txt",
-  "timestamp": "2025-08-06T10:30:00.000Z"
+  "message": "Neon database test completed successfully",
+  "test_results": {
+    "initial_sync_state": {
+      "last_sync": null,
+      "total_synced_orders": 0,
+      "failed_orders_count": 0,
+      "sync_in_progress": false
+    },
+    "sync_lock_test": {
+      "before_lock": false,
+      "after_lock": true,
+      "after_unlock": false
+    },
+    "sync_statistics": {
+      "last_sync": null,
+      "total_synced_orders": 1,
+      "total_notion_pages": 3,
+      "failed_orders_count": 1
+    }
+  },
+  "timestamp": "2025-08-08T10:30:00.000Z"
 }
 ```
 
@@ -231,8 +266,8 @@ SHOPIFY_ACCESS_TOKEN=shpat_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 NOTION_TOKEN=secret_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 NOTION_DATABASE_ID=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
-# Vercel Blob Storage
-BLOB_READ_WRITE_TOKEN=vercel_blob_rw_xxxxxxxxxxxxxxxx
+# Neon Database
+DATABASE_URL=postgresql://user:password@host/database?sslmode=require
 ```
 
 ## Usage Examples
@@ -332,6 +367,6 @@ curl https://your-project.vercel.app/api/sync
 
 - **Platform**: Vercel serverless functions
 - **Runtime**: Python 3.9
-- **Storage**: Vercel Blob for sync state management
+- **Database**: Neon PostgreSQL for sync state management
 - **APIs**: Shopify GraphQL Admin API, Notion REST API
-- **Dependencies**: `requests`, `notion-client`, `vercel-blob`
+- **Dependencies**: `requests`, `notion-client`, `psycopg[binary,pool]`

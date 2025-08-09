@@ -1,0 +1,12 @@
+{
+  "name": "shopify-notion-sync",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "@neondatabase/serverless": "^1.0.1",
+    "@notionhq/client": "^2.2.15"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
