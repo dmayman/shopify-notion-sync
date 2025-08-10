@@ -435,6 +435,10 @@ class ShopifyNotionSync {
     if (paymentMethod) {
       properties["Payment Method"] = { "rich_text": [{ "text": { "content": paymentMethod } }] };
     }
+    
+    // Add Merchant field - always "Shopify"
+    properties["Merchant"] = { "rich_text": [{ "text": { "content": "Shopify" } }] };
+    
     if (parentItem) {
       properties["Parent item"] = { "relation": [{ "id": parentItem }] };
     }
